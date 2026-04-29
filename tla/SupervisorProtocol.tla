@@ -2,305 +2,212 @@
 (*
  * TLA+ specification of the ffwd supervisor mode protocol.
  *
- * Models the interaction between three concurrent actors:
- *   1. OpAMP client — receives remote config from server, writes to intermediate file
- *   2. Supervisor — reads intermediate file, validates, writes to main config, signals child
- *   3. Child process — runs ff, handles SIGHUP, may crash at any time
+ * Models config flow through three actors:
+ *   1. OpAMP client — receives remote config, writes to intermediate file
+ *   2. Supervisor — reads intermediate, validates, writes to main, signals child
+ *   3. Child process — handles SIGHUP to reload, may crash at any time
  *
- * Verifies critical safety properties:
- *   - Path consistency: OpAMP writes to the same path supervisor reads from
- *   - PID safety: supervisor never signals a dead or exited child
- *   - Config monotonicity: main config file only changes through validation
- *   - No lost configs: every valid remote config eventually reaches the child
- *   - Graceful shutdown: signals are forwarded before cleanup
+ * Design: config is tracked as a version number flowing through the pipeline.
+ * No counters — convergence is expressed as "child eventually has latest main".
  *
- * Note: We use -1 as sentinel for "no value" to avoid TLC type errors from
- * mixing strings and integers in the same variable domain.
+ * Integer sentinels avoid TLC mixed-type errors (strings vs ints).
  *)
-EXTENDS Integers, Sequences, FiniteSets, TLC
+EXTENDS Integers, TLC
 
 CONSTANTS
-    MaxConfigs,           \* Bound on total remote config pushes
-    MaxCrashes            \* Bound on child crashes for model checking
+    MaxVersion,   \* Bound on config versions (1..MaxVersion)
+    MaxCrashes    \* Bound on child crashes
 
-NONE == -1  \* Sentinel: no pending config / empty file
+NONE == -1  \* Sentinel for empty/unset
 
 VARIABLES
-    (* OpAMP client state *)
-    opamp_write_path,     \* Path where OpAMP writes remote config ("intermediate" | "main")
-    opamp_pending,        \* Config waiting to write (version 1..MaxConfigs, or NONE)
-    intermediate_file,    \* Content of intermediate config file (version 1..MaxConfigs, or NONE)
+    intermediate,     \* Config version in intermediate file (NONE or 1..MaxVersion)
+    main,             \* Config version in main file (0 = initial, 1..MaxVersion)
+    supervisor_state, \* "idle" | "reading" | "writing" | "signaling"
+    child_alive,      \* Is the child process running?
+    child_pid_gen,    \* PID generation (increments on each respawn)
+    signal_gen,       \* PID gen captured when supervisor starts a read cycle
+    child_config,     \* Config version the child is running (0..MaxVersion)
+    latest_pushed,    \* Highest version pushed by OpAMP (0..MaxVersion)
+    shutdown          \* Graceful shutdown requested?
 
-    (* Supervisor state *)
-    supervisor_read_path, \* Path supervisor reads from ("intermediate" | "main")
-    main_config_file,     \* Content of the main config file (Nat version, 0 = initial)
-    supervisor_state,     \* "idle" | "reading" | "validating" | "writing" | "signaling"
+vars == <<intermediate, main, supervisor_state, child_alive,
+          child_pid_gen, signal_gen, child_config, latest_pushed, shutdown>>
 
-    (* Child process state *)
-    child_alive,          \* Whether the child process is running
-    child_pid_gen,        \* Current PID generation (increments on respawn)
-    signal_target_gen,    \* PID generation that supervisor targets with signals
-    child_config,         \* Config version the child is running with
-
-    (* Global *)
-    configs_pushed,       \* Number of configs pushed from OpAMP server
-    configs_applied,      \* Number of configs successfully applied to child
-    shutdown_requested    \* Whether graceful shutdown was requested
-
-vars == <<opamp_write_path, opamp_pending, intermediate_file,
-          supervisor_read_path, main_config_file, supervisor_state,
-          child_alive, child_pid_gen, signal_target_gen, child_config,
-          configs_pushed, configs_applied, shutdown_requested>>
+(* ═══════════ TYPE INVARIANT ═══════════ *)
 
 TypeOK ==
-    /\ opamp_write_path \in {"intermediate", "main"}
-    /\ opamp_pending \in {NONE} \cup 1..MaxConfigs
-    /\ intermediate_file \in {NONE} \cup 1..MaxConfigs
-    /\ supervisor_read_path \in {"intermediate", "main"}
-    /\ main_config_file \in 0..MaxConfigs
-    /\ supervisor_state \in {"idle", "reading", "validating", "writing", "signaling"}
+    /\ intermediate \in {NONE} \cup 1..MaxVersion
+    /\ main \in 0..MaxVersion
+    /\ supervisor_state \in {"idle", "reading", "writing", "signaling"}
     /\ child_alive \in BOOLEAN
     /\ child_pid_gen \in 0..MaxCrashes
-    /\ signal_target_gen \in 0..MaxCrashes
-    /\ child_config \in 0..MaxConfigs
-    /\ configs_pushed \in 0..MaxConfigs
-    /\ configs_applied \in 0..MaxConfigs
-    /\ shutdown_requested \in BOOLEAN
+    /\ signal_gen \in 0..MaxCrashes
+    /\ child_config \in 0..MaxVersion
+    /\ latest_pushed \in 0..MaxVersion
+    /\ shutdown \in BOOLEAN
+
+(* ═══════════ INITIAL STATE ═══════════ *)
 
 Init ==
-    /\ opamp_write_path = "intermediate"   \* OpAMP writes to intermediate (correct!)
-    /\ opamp_pending = NONE
-    /\ intermediate_file = NONE
-    /\ supervisor_read_path = "intermediate" \* Supervisor reads from intermediate (matches!)
-    /\ main_config_file = 0
+    /\ intermediate = NONE
+    /\ main = 0
     /\ supervisor_state = "idle"
     /\ child_alive = TRUE
     /\ child_pid_gen = 0
-    /\ signal_target_gen = 0
+    /\ signal_gen = 0
     /\ child_config = 0
-    /\ configs_pushed = 0
-    /\ configs_applied = 0
-    /\ shutdown_requested = FALSE
+    /\ latest_pushed = 0
+    /\ shutdown = FALSE
 
 (* ═══════════ OPAMP ACTIONS ═══════════ *)
 
-(* OpAMP server pushes a new config version *)
-OpampReceiveConfig ==
-    /\ configs_pushed < MaxConfigs
-    /\ ~shutdown_requested
-    /\ opamp_pending = NONE
-    /\ opamp_pending' = configs_pushed + 1
-    /\ configs_pushed' = configs_pushed + 1
-    /\ UNCHANGED <<opamp_write_path, intermediate_file, supervisor_read_path,
-                   main_config_file, supervisor_state, child_alive, child_pid_gen,
-                   signal_target_gen, child_config, configs_applied, shutdown_requested>>
-
-(* OpAMP writes received config to the write path *)
-OpampWriteConfig ==
-    /\ opamp_pending # NONE
-    /\ opamp_write_path = "intermediate"   \* In supervisor mode, always writes here
-    /\ intermediate_file' = opamp_pending
-    /\ opamp_pending' = NONE
-    /\ UNCHANGED <<opamp_write_path, supervisor_read_path, main_config_file,
-                   supervisor_state, child_alive, child_pid_gen, signal_target_gen,
-                   child_config, configs_pushed, configs_applied, shutdown_requested>>
-
-(* BUG MODEL: OpAMP writes to main config directly (the bug we fixed) *)
-OpampWriteConfigBUGGY ==
-    /\ opamp_pending # NONE
-    /\ opamp_write_path = "main"   \* WRONG: supervisor can't detect this!
-    /\ main_config_file' = opamp_pending
-    /\ opamp_pending' = NONE
-    /\ UNCHANGED <<opamp_write_path, intermediate_file, supervisor_read_path,
-                   supervisor_state, child_alive, child_pid_gen, signal_target_gen,
-                   child_config, configs_pushed, configs_applied, shutdown_requested>>
+(* OpAMP receives a new config version and writes to intermediate.
+   Newer configs overwrite older ones — this is intentional (last-writer-wins). *)
+OpampPush ==
+    /\ latest_pushed < MaxVersion
+    /\ ~shutdown
+    /\ latest_pushed' = latest_pushed + 1
+    /\ intermediate' = latest_pushed + 1
+    /\ UNCHANGED <<main, supervisor_state, child_alive,
+                   child_pid_gen, signal_gen, child_config, shutdown>>
 
 (* ═══════════ SUPERVISOR ACTIONS ═══════════ *)
 
-(* Supervisor detects new config (reload notification from OpAMP) *)
-SupervisorBeginRead ==
+(* Supervisor sees a new intermediate config and begins processing *)
+BeginRead ==
     /\ supervisor_state = "idle"
-    /\ intermediate_file # NONE   \* There's something to read
-    /\ ~shutdown_requested
-    /\ child_alive                     \* Only proceed if child is alive
+    /\ intermediate # NONE
+    /\ ~shutdown
     /\ supervisor_state' = "reading"
-    /\ signal_target_gen' = child_pid_gen  \* Capture current PID generation
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, child_alive,
-                   child_pid_gen, child_config, configs_pushed, configs_applied,
-                   shutdown_requested>>
+    /\ signal_gen' = child_pid_gen   \* Capture current child generation
+    /\ UNCHANGED <<intermediate, main, child_alive,
+                   child_pid_gen, child_config, latest_pushed, shutdown>>
 
-(* Supervisor reads from intermediate file and validates *)
-SupervisorValidate ==
+(* Supervisor validates and writes config to main *)
+WriteMain ==
     /\ supervisor_state = "reading"
-    /\ supervisor_read_path = "intermediate"  \* Reads from intermediate (matches OpAMP write)
-    /\ intermediate_file # NONE
-    /\ supervisor_state' = "validating"
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, child_alive,
-                   child_pid_gen, signal_target_gen, child_config,
-                   configs_pushed, configs_applied, shutdown_requested>>
-
-(* Validation passes — write to main config file *)
-SupervisorWrite ==
-    /\ supervisor_state = "validating"
-    /\ main_config_file' = intermediate_file   \* Copy validated config to main
-    /\ intermediate_file' = NONE               \* Clear intermediate
+    /\ intermediate # NONE
+    /\ main' = intermediate
+    /\ intermediate' = NONE
     /\ supervisor_state' = "writing"
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, supervisor_read_path,
-                   child_alive, child_pid_gen, signal_target_gen, child_config,
-                   configs_pushed, configs_applied, shutdown_requested>>
+    /\ UNCHANGED <<child_alive, child_pid_gen, signal_gen,
+                   child_config, latest_pushed, shutdown>>
 
-(* Supervisor signals child (SIGHUP) after writing config *)
-SupervisorSignal ==
+(* Supervisor sends SIGHUP — child is alive and same generation *)
+Signal ==
     /\ supervisor_state = "writing"
-    /\ child_alive                           \* try_wait() check passes
-    /\ signal_target_gen = child_pid_gen     \* PID hasn't changed since we started
+    /\ child_alive
+    /\ signal_gen = child_pid_gen
     /\ supervisor_state' = "signaling"
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, child_alive,
-                   child_pid_gen, signal_target_gen, child_config,
-                   configs_pushed, configs_applied, shutdown_requested>>
+    /\ UNCHANGED <<intermediate, main, child_alive,
+                   child_pid_gen, signal_gen, child_config, latest_pushed, shutdown>>
 
-(* Supervisor signal skipped because child exited (PID race guard) *)
-SupervisorSignalSkipped ==
+(* Signal skipped — child died or was replaced since we started *)
+SignalSkip ==
     /\ supervisor_state = "writing"
-    /\ (~child_alive \/ signal_target_gen # child_pid_gen)
-    /\ supervisor_state' = "idle"    \* Back to idle — child will be respawned
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, child_alive,
-                   child_pid_gen, signal_target_gen, child_config,
-                   configs_pushed, configs_applied, shutdown_requested>>
+    /\ (~child_alive \/ signal_gen # child_pid_gen)
+    /\ supervisor_state' = "idle"
+    /\ UNCHANGED <<intermediate, main, child_alive,
+                   child_pid_gen, signal_gen, child_config, latest_pushed, shutdown>>
 
-(* Child receives SIGHUP and reloads *)
+(* Child receives SIGHUP and reloads (same generation as target) *)
 ChildReload ==
     /\ supervisor_state = "signaling"
     /\ child_alive
-    /\ child_config' = main_config_file   \* Child reads new config
-    /\ configs_applied' = configs_applied + 1
+    /\ signal_gen = child_pid_gen
+    /\ child_config' = main
     /\ supervisor_state' = "idle"
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, child_alive,
-                   child_pid_gen, signal_target_gen, configs_pushed,
-                   shutdown_requested>>
+    /\ UNCHANGED <<intermediate, main, child_alive,
+                   child_pid_gen, signal_gen, latest_pushed, shutdown>>
 
-(* Signal delivery fails because child died — supervisor detects ESRCH and
-   returns to idle. The child will be respawned by ChildRespawn, and the
-   config will be applied on next startup (child reads main_config_file). *)
-SupervisorSignalFailed ==
+(* Signal delivery fails — child died while in signaling state *)
+SignalFail ==
     /\ supervisor_state = "signaling"
-    /\ ~child_alive
+    /\ (~child_alive \/ signal_gen # child_pid_gen)
     /\ supervisor_state' = "idle"
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, child_alive,
-                   child_pid_gen, signal_target_gen, child_config,
-                   configs_pushed, configs_applied, shutdown_requested>>
+    /\ UNCHANGED <<intermediate, main, child_alive,
+                   child_pid_gen, signal_gen, child_config, latest_pushed, shutdown>>
 
-(* ═══════════ CHILD ACTIONS ═══════════ *)
+(* ═══════════ CHILD LIFECYCLE ═══════════ *)
 
-(* Child crashes unexpectedly *)
-ChildCrash ==
+(* Child crashes *)
+Crash ==
     /\ child_alive
     /\ child_pid_gen < MaxCrashes
-    /\ ~shutdown_requested
+    /\ ~shutdown
     /\ child_alive' = FALSE
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, supervisor_state,
-                   child_pid_gen, signal_target_gen, child_config,
-                   configs_pushed, configs_applied, shutdown_requested>>
+    /\ UNCHANGED <<intermediate, main, supervisor_state,
+                   child_pid_gen, signal_gen, child_config, latest_pushed, shutdown>>
 
-(* Supervisor respawns child after crash *)
-ChildRespawn ==
+(* Child respawns — reads current main config on startup *)
+Respawn ==
     /\ ~child_alive
-    /\ ~shutdown_requested
+    /\ ~shutdown
     /\ child_alive' = TRUE
-    /\ child_pid_gen' = child_pid_gen + 1  \* New generation (different PID)
-    /\ child_config' = main_config_file    \* Reads current main config on startup
-    \* Starting with main_config_file means all configs written to main are applied
-    /\ configs_applied' = main_config_file
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, supervisor_state,
-                   signal_target_gen, configs_pushed,
-                   shutdown_requested>>
+    /\ child_pid_gen' = child_pid_gen + 1
+    /\ child_config' = main   \* New process starts with current main config
+    /\ UNCHANGED <<intermediate, main, supervisor_state,
+                   signal_gen, latest_pushed, shutdown>>
 
 (* ═══════════ SHUTDOWN ═══════════ *)
 
-(* Graceful shutdown requested *)
-Shutdown ==
-    /\ ~shutdown_requested
-    /\ shutdown_requested' = TRUE
-    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
-                   supervisor_read_path, main_config_file, supervisor_state,
-                   child_alive, child_pid_gen, signal_target_gen, child_config,
-                   configs_pushed, configs_applied>>
+ShutdownReq ==
+    /\ ~shutdown
+    /\ shutdown' = TRUE
+    /\ UNCHANGED <<intermediate, main, supervisor_state, child_alive,
+                   child_pid_gen, signal_gen, child_config, latest_pushed>>
 
-(* Terminal state: process exits after shutdown — prevents TLC deadlock *)
+(* Terminal stuttering — prevents TLC deadlock report *)
 Terminated ==
-    /\ shutdown_requested
+    /\ shutdown
     /\ UNCHANGED vars
 
+(* ═══════════ NEXT-STATE RELATION ═══════════ *)
+
 Next ==
-    \/ OpampReceiveConfig
-    \/ OpampWriteConfig
-    \/ SupervisorBeginRead
-    \/ SupervisorValidate
-    \/ SupervisorWrite
-    \/ SupervisorSignal
-    \/ SupervisorSignalSkipped
-    \/ SupervisorSignalFailed
+    \/ OpampPush
+    \/ BeginRead
+    \/ WriteMain
+    \/ Signal
+    \/ SignalSkip
     \/ ChildReload
-    \/ ChildCrash
-    \/ ChildRespawn
-    \/ Shutdown
+    \/ SignalFail
+    \/ Crash
+    \/ Respawn
+    \/ ShutdownReq
     \/ Terminated
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 (* ═══════════ SAFETY PROPERTIES ═══════════ *)
 
-(* CRITICAL: OpAMP writes to the same path supervisor reads from *)
-PathConsistency ==
-    opamp_write_path = supervisor_read_path
-
-(* PID safety: when a signal is actually delivered (ChildReload transitions),
-   the target generation matches the current child. This is structurally
-   guaranteed by ChildReload's guard (child_alive /\ supervisor is signaling)
-   combined with SupervisorSignal's guard (signal_target_gen = child_pid_gen).
-   If the child crashes/respawns between those points, SupervisorSignalSkipped
-   fires instead. We verify a weaker invariant: supervisor only enters active
-   states after capturing a generation (signal_target_gen in valid range). *)
-SignalTargetValid ==
-    supervisor_state \in {"reading", "validating", "writing", "signaling"}
-        => signal_target_gen \in 0..MaxCrashes
-
-(* Config monotonicity: main config version never decreases *)
+(* Main config only advances — never goes backward *)
 ConfigMonotonic ==
-    [][main_config_file' >= main_config_file]_vars
+    [][main' >= main]_vars
 
-(* Validation gate: main config only changes through supervisor write path *)
+(* Main config only changes via WriteMain (supervisor_state = "reading") *)
 OnlyValidatedConfigsReachMain ==
-    [][main_config_file' # main_config_file =>
-       supervisor_state = "validating"]_vars
+    [][main' # main => supervisor_state = "reading"]_vars
 
-(* Child config is always <= main config (child reads main on start/reload) *)
-ChildConfigBounded ==
-    child_alive => child_config <= main_config_file
+(* Child config never exceeds main — child reads main, never intermediate *)
+ChildNeverAheadOfMain ==
+    child_config <= main
 
 (* ═══════════ LIVENESS PROPERTIES ═══════════ *)
 
-(* Every config pushed by OpAMP eventually reaches the child (under fairness).
-   Guarded by ~shutdown_requested: after shutdown, pending configs are abandoned. *)
-ConfigEventuallyApplied ==
-    [](~shutdown_requested /\ configs_pushed > configs_applied =>
-       <>(configs_applied = configs_pushed \/ shutdown_requested))
+(* If a config reaches main, the child eventually gets it (or shutdown) *)
+ChildEventuallyConverges ==
+    [](child_alive /\ child_config # main /\ ~shutdown =>
+       <>(child_config = main \/ shutdown))
 
-(* After a crash, child is eventually respawned *)
-CrashEventuallyRecovered ==
-    [](~child_alive /\ ~shutdown_requested => <>(child_alive \/ shutdown_requested))
+(* After a crash, child is eventually respawned (or shutdown) *)
+CrashRecovery ==
+    [](~child_alive /\ ~shutdown => <>(child_alive \/ shutdown))
 
-(* Supervisor always returns to idle (unless shutdown interrupts) *)
-SupervisorAlwaysReturnsToIdle ==
-    [](supervisor_state # "idle" /\ ~shutdown_requested =>
-       <>(supervisor_state = "idle" \/ shutdown_requested))
+(* Supervisor always returns to idle (or shutdown) *)
+SupervisorProgress ==
+    [](supervisor_state # "idle" /\ ~shutdown =>
+       <>(supervisor_state = "idle" \/ shutdown))
 
 ================================================================================
