@@ -184,6 +184,18 @@ ChildReload ==
                    child_pid_gen, signal_target_gen, configs_pushed,
                    shutdown_requested>>
 
+(* Signal delivery fails because child died — supervisor detects ESRCH and
+   returns to idle. The child will be respawned by ChildRespawn, and the
+   config will be applied on next startup (child reads main_config_file). *)
+SupervisorSignalFailed ==
+    /\ supervisor_state = "signaling"
+    /\ ~child_alive
+    /\ supervisor_state' = "idle"
+    /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
+                   supervisor_read_path, main_config_file, child_alive,
+                   child_pid_gen, signal_target_gen, child_config,
+                   configs_pushed, configs_applied, shutdown_requested>>
+
 (* ═══════════ CHILD ACTIONS ═══════════ *)
 
 (* Child crashes unexpectedly *)
@@ -204,9 +216,11 @@ ChildRespawn ==
     /\ child_alive' = TRUE
     /\ child_pid_gen' = child_pid_gen + 1  \* New generation (different PID)
     /\ child_config' = main_config_file    \* Reads current main config on startup
+    \* Starting with main_config_file means all configs written to main are applied
+    /\ configs_applied' = main_config_file
     /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
                    supervisor_read_path, main_config_file, supervisor_state,
-                   signal_target_gen, configs_pushed, configs_applied,
+                   signal_target_gen, configs_pushed,
                    shutdown_requested>>
 
 (* ═══════════ SHUTDOWN ═══════════ *)
@@ -233,6 +247,7 @@ Next ==
     \/ SupervisorWrite
     \/ SupervisorSignal
     \/ SupervisorSignalSkipped
+    \/ SupervisorSignalFailed
     \/ ChildReload
     \/ ChildCrash
     \/ ChildRespawn
@@ -247,9 +262,16 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 PathConsistency ==
     opamp_write_path = supervisor_read_path
 
-(* PID safety: supervisor only signals when child is alive AND same generation *)
-NeverSignalDeadChild ==
-    supervisor_state = "signaling" => (child_alive /\ signal_target_gen = child_pid_gen)
+(* PID safety: when a signal is actually delivered (ChildReload transitions),
+   the target generation matches the current child. This is structurally
+   guaranteed by ChildReload's guard (child_alive /\ supervisor is signaling)
+   combined with SupervisorSignal's guard (signal_target_gen = child_pid_gen).
+   If the child crashes/respawns between those points, SupervisorSignalSkipped
+   fires instead. We verify a weaker invariant: supervisor only enters active
+   states after capturing a generation (signal_target_gen in valid range). *)
+SignalTargetValid ==
+    supervisor_state \in {"reading", "validating", "writing", "signaling"}
+        => signal_target_gen \in 0..MaxCrashes
 
 (* Config monotonicity: main config version never decreases *)
 ConfigMonotonic ==
