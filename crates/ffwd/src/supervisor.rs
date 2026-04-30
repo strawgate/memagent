@@ -356,8 +356,9 @@ fn was_terminated_by(status: std::process::ExitStatus, signal: i32) -> bool {
 
 /// Handle a remote config push from OpAMP using the config-flow state machine.
 ///
-/// Drives a [`config_flow::ConfigFlow`] through its states, executing effects
-/// at each step. Each step is deterministic and individually testable.
+/// Drives a [`ConfigFlow`](crate::config_flow::ConfigFlow) through its states,
+/// executing effects at each step. Each step is deterministic and individually
+/// testable.
 ///
 /// `yaml` is `Some(config_yaml)` when the OpAMP server pushed a config directly,
 /// or `None` for a restart command (re-read config from disk — not yet supported

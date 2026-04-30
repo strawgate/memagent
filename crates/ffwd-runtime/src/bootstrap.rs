@@ -432,11 +432,15 @@ pub async fn run_pipelines(
                                     state.set_effective_config(committed.effective_yaml());
                                     // Persist to disk atomically for crash recovery.
                                     // Uses temp file + rename to prevent partial writes.
+                                    // The temp name includes the PID to avoid conflicts if
+                                    // a stale tmp from a prior crash is still on disk.
                                     let persist_path = PathBuf::from(options.config_path);
                                     let persist_yaml = committed.effective_yaml().to_owned();
                                     tokio::spawn(async move {
-                                        let tmp_path =
-                                            persist_path.with_extension("yaml.opamp-tmp");
+                                        let tmp_path = persist_path.with_extension(format!(
+                                            "yaml.opamp-tmp.{}",
+                                            std::process::id()
+                                        ));
                                         if let Err(e) =
                                             tokio::fs::write(&tmp_path, &persist_yaml).await
                                         {

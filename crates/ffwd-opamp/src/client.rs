@@ -145,9 +145,9 @@ impl OpampClient {
     /// Run the OpAMP client loop until shutdown is signalled.
     ///
     /// - `shutdown`: Cancellation token to stop the client
-    /// - `data_dir`: Data directory for state persistence
-    /// - `config_path`: Path where accepted remote config is written (atomic rename).
-    ///   The bootstrap reload loop re-reads this path on reload signals.
+    /// - `data_dir`: Data directory for state persistence (reserved for future use)
+    /// - `config_path`: Fallback path used to derive the validation base directory
+    ///   when `config_base_path` is not provided (uses the parent directory).
     /// - `config_base_path`: Base directory for resolving relative paths during
     ///   config validation. In supervised mode this should be the child's real
     ///   config directory (not the staging file's parent).
@@ -358,11 +358,15 @@ impl ApiCallbacks for &mut OpampHandler {
                 // no split-brain race. The consumer gets the config atomically with
                 // the reload signal. Persistence to disk happens in the consumer
                 // after the config is committed (for crash recovery).
-                if let Ok(mut state) = self.state.lock() {
-                    state.last_config_applied = false;
-                }
                 tracing::info!("opamp: validated remote config, triggering reload");
-                if self.reload_tx.try_send(Some(yaml)).is_err() {
+                if self.reload_tx.try_send(Some(yaml)).is_ok() {
+                    // Only mark as not-applied once the signal is successfully queued.
+                    // If the channel is full, a pending reload will pick up the latest
+                    // disk config — leaving last_config_applied stale would mislead the server.
+                    if let Ok(mut state) = self.state.lock() {
+                        state.last_config_applied = false;
+                    }
+                } else {
                     tracing::debug!(
                         "opamp: reload signal already queued (coalescing with pending reload)"
                     );
