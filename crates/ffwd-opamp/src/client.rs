@@ -20,8 +20,6 @@ struct SharedState {
     effective_config: String,
     /// Whether the last remote config was applied successfully.
     last_config_applied: bool,
-    /// The last remote config received from the server (if any).
-    pending_remote_config: Option<String>,
 }
 
 /// A lightweight handle for updating OpAMP state from outside the client task.
@@ -45,15 +43,6 @@ impl OpampStateHandle {
             }
         }
     }
-
-    /// Take the pending remote config (if any) for in-process application.
-    ///
-    /// Returns `Some(yaml)` if the OpAMP server pushed a new config that hasn't
-    /// been consumed yet. Clears the pending state so subsequent calls return `None`.
-    /// This allows the bootstrap loop to apply remote configs without disk I/O.
-    pub fn take_pending_remote_config(&self) -> Option<String> {
-        self.state.lock().ok()?.pending_remote_config.take()
-    }
 }
 
 /// OpAMP client that connects to a server and manages remote configuration.
@@ -68,7 +57,7 @@ impl OpampStateHandle {
 pub struct OpampClient {
     config: OpampConfig,
     identity: AgentIdentity,
-    reload_tx: tokio::sync::mpsc::Sender<()>,
+    reload_tx: tokio::sync::mpsc::Sender<Option<String>>,
     state: Arc<Mutex<SharedState>>,
 }
 
@@ -77,16 +66,16 @@ impl OpampClient {
     ///
     /// - `config`: OpAMP configuration (endpoint, poll interval, etc.)
     /// - `identity`: Agent identity (instance UID, version, service name)
-    /// - `reload_tx`: Channel to trigger config reload in the bootstrap loop
+    /// - `reload_tx`: Channel to deliver config reload signals. `Some(yaml)` for
+    ///   OpAMP-pushed configs, `None` for restart commands (re-read from disk).
     pub fn new(
         config: OpampConfig,
         identity: AgentIdentity,
-        reload_tx: tokio::sync::mpsc::Sender<()>,
+        reload_tx: tokio::sync::mpsc::Sender<Option<String>>,
     ) -> Self {
         let state = Arc::new(Mutex::new(SharedState {
             effective_config: String::new(),
             last_config_applied: true,
-            pending_remote_config: None,
         }));
 
         Self {
@@ -244,7 +233,7 @@ impl OpampClient {
 struct OpampHandler {
     state: Arc<Mutex<SharedState>>,
     accept_remote_config: bool,
-    reload_tx: tokio::sync::mpsc::Sender<()>,
+    reload_tx: tokio::sync::mpsc::Sender<Option<String>>,
     /// Base directory for validating config (resolving relative paths).
     /// In supervised mode this is the child's config dir, not the staging dir.
     validation_base_path: Option<PathBuf>,
@@ -303,10 +292,10 @@ impl ApiCallbacks for &mut OpampHandler {
     ) -> Result<Option<AgentToServer>, ApiClientError> {
         if let Some(ref command) = inbound.command {
             tracing::info!(command_type = command.r#type, "opamp: received command");
-            // Command type 1 = Restart
+            // Command type 1 = Restart → re-read config from disk
             if command.r#type == 1 {
                 tracing::info!("opamp: restart command received, triggering reload");
-                let _ = self.reload_tx.try_send(());
+                let _ = self.reload_tx.try_send(None);
             }
         }
         Ok(None)
@@ -365,16 +354,15 @@ impl ApiCallbacks for &mut OpampHandler {
         }));
         match validation_result {
             Ok(Ok(_validated)) => {
-                // Store the validated config in shared state for the bootstrap loop
-                // to consume directly — no blocking disk I/O in this sync callback.
-                // Persistence to disk happens asynchronously in the bootstrap loop
+                // Send the validated YAML directly on the channel — no shared state,
+                // no split-brain race. The consumer gets the config atomically with
+                // the reload signal. Persistence to disk happens in the consumer
                 // after the config is committed (for crash recovery).
                 if let Ok(mut state) = self.state.lock() {
-                    state.pending_remote_config = Some(yaml);
                     state.last_config_applied = false;
                 }
                 tracing::info!("opamp: validated remote config, triggering reload");
-                if self.reload_tx.try_send(()).is_err() {
+                if self.reload_tx.try_send(Some(yaml)).is_err() {
                     tracing::debug!(
                         "opamp: reload signal already queued (coalescing with pending reload)"
                     );

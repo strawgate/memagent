@@ -64,8 +64,9 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .map_err(|e| CliError::Runtime(std::io::Error::other(e)))?;
 
-    // Channel for OpAMP to notify us of new remote config (capacity 1 — coalesces).
-    let (reload_tx, mut reload_rx) = mpsc::channel::<()>(1);
+    // Channel for OpAMP to deliver config reload signals (capacity 1 — coalesces).
+    // Some(yaml) = OpAMP pushed config, None = restart command (re-read from disk).
+    let (reload_tx, mut reload_rx) = mpsc::channel::<Option<String>>(1);
 
     // Resolve agent identity.
     let identity = ffwd_opamp::AgentIdentity::resolve(
@@ -85,9 +86,9 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     state_handle.set_effective_config(validated.effective_yaml());
 
     // Spawn OpAMP client task.
-    // Config pushes are stored in SharedState (in-memory) and consumed by
-    // handle_remote_config via take_pending_remote_config(). No intermediate
-    // file I/O in the callback — persistence happens after commit.
+    // Config pushes are sent directly on the reload channel as Some(yaml).
+    // No shared state for config delivery — the channel carries both the
+    // signal and the payload atomically.
     let opamp_shutdown = shutdown.clone();
     let opamp_data_dir = data_dir.clone();
     let opamp_remote_config_path = remote_config_path.clone();
@@ -137,7 +138,7 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                 }
                 result = reload_rx.recv() => {
                     match result {
-                        Some(()) => ChildExit::Reload,
+                        Some(signal) => ChildExit::Reload(signal),
                         None => {
                             // Channel closed (all senders dropped, e.g. OpAMP task exited).
                             // Wait for child or shutdown — no more reloads possible.
@@ -219,8 +220,8 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                     shutdown.cancel();
                     break 'outer;
                 }
-                ChildExit::Reload => {
-                    // OpAMP pushed new config — validate, write, SIGHUP.
+                ChildExit::Reload(yaml) => {
+                    // Reload triggered — validate, write, SIGHUP.
                     // Guard: verify child is still alive before signaling.
                     match child.try_wait() {
                         Ok(Some(status)) => {
@@ -249,6 +250,7 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                                 &state_handle,
                                 &mut child,
                                 child_pid,
+                                yaml,
                             )
                             .await;
                         }
@@ -285,7 +287,8 @@ enum ChildExit {
     Exited(std::process::ExitStatus),
     Signal(i32),
     WaitError(std::io::Error),
-    Reload,
+    /// Reload requested. `Some(yaml)` = OpAMP-pushed config, `None` = re-read from disk.
+    Reload(Option<String>),
 }
 
 fn spawn_child(config_path: &str) -> Result<tokio::process::Child, CliError> {
@@ -355,18 +358,31 @@ fn was_terminated_by(status: std::process::ExitStatus, signal: i32) -> bool {
 ///
 /// Drives a [`config_flow::ConfigFlow`] through its states, executing effects
 /// at each step. Each step is deterministic and individually testable.
+///
+/// `yaml` is `Some(config_yaml)` when the OpAMP server pushed a config directly,
+/// or `None` for a restart command (re-read config from disk — not yet supported
+/// in supervisor mode, logged as a no-op).
 async fn handle_remote_config(
     config_path: &Path,
     state_handle: &ffwd_opamp::OpampStateHandle,
     child: &mut tokio::process::Child,
     child_pid: u32,
+    yaml: Option<String>,
 ) {
     use crate::config_flow::{ConfigFlow, Effect, Event};
 
+    // None means "re-read from disk" — in supervisor mode we only apply explicit
+    // config pushes since we own the authoritative config file.
+    let Some(remote_yaml) = yaml else {
+        tracing::debug!(
+            "supervisor: reload signal without config payload (restart command), ignoring"
+        );
+        return;
+    };
+
     let mut flow = ConfigFlow::new(config_path.to_owned(), child_pid);
 
-    // Kick off the cycle. We pass a dummy path since we'll pull the yaml
-    // from OpAMP shared state (in-memory) in the ReadAndValidate handler.
+    // Kick off the cycle. We pass a dummy path since we already have the yaml.
     let mut effect = flow.step(Event::ConfigAvailable {
         remote_path: PathBuf::from("<in-memory>"),
     });
@@ -374,21 +390,13 @@ async fn handle_remote_config(
     loop {
         match effect {
             Effect::ReadAndValidate(_path) => {
-                // Pull validated config directly from OpAMP shared state (no disk I/O).
-                // If shared state is empty, this is a duplicate signal (channel capacity
-                // coalescing race) — gracefully no-op rather than error.
-                let event = if let Some(yaml) = state_handle.take_pending_remote_config() {
-                    match ffwd_config::ValidatedConfig::from_yaml(&yaml, config_path.parent()) {
-                        Ok(v) => Event::ReadOk(Box::new(v)),
-                        Err(e) => Event::ReadFailed(format!("validation failed: {e}")),
-                    }
-                } else {
-                    // Duplicate signal — previous handler already consumed the config.
-                    // This is expected with capacity-1 channels + multiple rapid pushes.
-                    tracing::debug!(
-                        "supervisor: reload signal with no pending config (duplicate signal, ignoring)"
-                    );
-                    break;
+                // Validate the YAML we received directly on the channel.
+                let event = match ffwd_config::ValidatedConfig::from_yaml(
+                    &remote_yaml,
+                    config_path.parent(),
+                ) {
+                    Ok(v) => Event::ReadOk(Box::new(v)),
+                    Err(e) => Event::ReadFailed(format!("validation failed: {e}")),
                 };
                 effect = flow.step(event);
             }

@@ -88,7 +88,9 @@ pub async fn run_pipelines(
     // Capacity 1 intentionally coalesces simultaneous SIGHUP/file-watcher/
     // diagnostics/OpAMP reload signals into one pending reload. Increasing this
     // changes behavior from debouncing to buffering distinct reload events.
-    let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel::<()>(1);
+    // `Some(yaml)` = OpAMP-pushed config (use directly, no disk read).
+    // `None` = SIGHUP/file-watcher/HTTP/restart command (re-read from disk).
+    let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
 
     #[cfg(unix)]
     let (mut sigterm, mut sighup, mut sigusr1, mut sigusr2) = {
@@ -153,7 +155,7 @@ pub async fn run_pipelines(
                             "{}ffwd{}: SIGHUP received — reloading configuration",
                             yellow(use_color), reset(use_color),
                         );
-                        let _ = reload_tx_for_signal.try_send(());
+                        let _ = reload_tx_for_signal.try_send(None);
                     }
                 }
             }
@@ -247,7 +249,7 @@ pub async fn run_pipelines(
                                 // emitted a transient event while the file was absent).
                                 if config_path.exists() {
                                     tracing::info!("config watcher: file changed, triggering reload");
-                                    let _ = reload_tx_for_watcher.try_send(());
+                                    let _ = reload_tx_for_watcher.try_send(None);
                                 }
                             }
                         }
@@ -355,6 +357,9 @@ pub async fn run_pipelines(
 
     let mut current_config = config;
     let mut pending: Option<ffwd_config::ValidatedConfig> = None;
+    // YAML received directly from OpAMP on the reload channel (Some(yaml))
+    // vs None meaning re-read from disk (SIGHUP/file-watcher/HTTP).
+    let mut reload_yaml: Option<String> = None;
     let mut pipeline_metrics: Vec<Arc<ffwd_diagnostics::diagnostics::PipelineMetrics>> = Vec::new();
     // Suppress unused_assignments: initial empty value is overwritten in the
     // first loop iteration, but the binding must exist before the loop.
@@ -605,8 +610,11 @@ pub async fn run_pipelines(
                             let _effects = coordinator.step(Event::ShutdownRequested);
                             break_outer = true;
                         }
-                        _ = reload_rx.recv() => {
-                            // Reload: drain pipelines.
+                        signal = reload_rx.recv() => {
+                            // Reload signal received. Capture the payload:
+                            // Some(yaml) = OpAMP pushed config, None = read from disk.
+                            reload_yaml = signal.flatten();
+                            // Drain pipelines.
                             tracing::info!("config reload: draining pipelines");
                             pipeline_shutdown.cancel();
                             let drain_ok = tokio::time::timeout(
@@ -655,16 +663,9 @@ pub async fn run_pipelines(
                 // ── Re-read and validate config ──
                 reload_total.add(1, &[]);
 
-                // Prefer in-memory config from OpAMP (avoids disk I/O roundtrip).
-                // Falls back to reading from disk for file-watcher / SIGHUP triggers.
-                #[cfg(feature = "opamp")]
-                let opamp_yaml = opamp_client
-                    .as_ref()
-                    .and_then(|(state, _)| state.take_pending_remote_config());
-                #[cfg(not(feature = "opamp"))]
-                let opamp_yaml: Option<String> = None;
-
-                let new_yaml = if let Some(yaml) = opamp_yaml {
+                // Use the in-memory YAML from the reload channel (OpAMP push)
+                // or fall back to reading from disk (SIGHUP/file-watcher/HTTP).
+                let new_yaml = if let Some(yaml) = reload_yaml.take() {
                     tracing::info!("config reload: using in-memory config from OpAMP");
                     yaml
                 } else {
