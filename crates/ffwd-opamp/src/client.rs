@@ -357,9 +357,14 @@ impl ApiCallbacks for &mut OpampHandler {
 
         // Validate before signaling reload. Use the config base path (child's
         // config dir in supervised mode) rather than the staging file's parent.
+        // Wrapped in catch_unwind to prevent a validation panic from killing the
+        // entire OpAMP task (which would permanently disable remote config).
         let base_path = self.validation_base_path.as_deref();
-        match ffwd_config::ValidatedConfig::from_yaml(&yaml, base_path) {
-            Ok(_validated) => {
+        let validation_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ffwd_config::ValidatedConfig::from_yaml(&yaml, base_path)
+        }));
+        match validation_result {
+            Ok(Ok(_validated)) => {
                 // Store the validated config in shared state for the bootstrap loop
                 // to consume directly — no blocking disk I/O in this sync callback.
                 // Persistence to disk happens asynchronously in the bootstrap loop
@@ -375,10 +380,15 @@ impl ApiCallbacks for &mut OpampHandler {
                     );
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::error!(
                     error = %e,
                     "opamp: received invalid remote config, rejecting"
+                );
+            }
+            Err(_panic) => {
+                tracing::error!(
+                    "opamp: config validation panicked — rejecting config (task continues)"
                 );
             }
         }
