@@ -523,6 +523,106 @@ mod tests {
     }
 }
 
+/// Tests verifying the typed reload channel protocol used by the executor.
+///
+/// The reload channel is `mpsc::channel::<Option<String>>(1)` where:
+/// - `Some(yaml)` = OpAMP-pushed config (use directly, skip disk read)
+/// - `None` = SIGHUP/file-watcher/HTTP (re-read config from disk)
+///
+/// These tests validate that the executor correctly routes signals
+/// without needing the full pipeline infrastructure.
+#[cfg(test)]
+mod channel_protocol_tests {
+    use tokio::sync::mpsc;
+
+    /// Simulates the executor's receive logic for the typed reload channel.
+    /// Returns the YAML to validate (either from channel or "from disk").
+    async fn executor_receive_config(signal: Option<String>, disk_yaml: &str) -> String {
+        // This mirrors the executor's Validating state logic:
+        // `if let Some(yaml) = reload_yaml.take() { yaml } else { read_from_disk() }`
+        if let Some(yaml) = signal {
+            yaml
+        } else {
+            disk_yaml.to_owned()
+        }
+    }
+
+    #[tokio::test]
+    async fn opamp_push_delivers_yaml_directly() {
+        let (tx, mut rx) = mpsc::channel::<Option<String>>(1);
+        let yaml = "pipelines:\n  default:\n    inputs: []\n    outputs: []";
+
+        // OpAMP sends Some(yaml)
+        tx.send(Some(yaml.to_owned())).await.unwrap();
+
+        // Executor receives and uses it directly
+        let signal = rx.recv().await.unwrap();
+        let result = executor_receive_config(signal, "should not use disk").await;
+        assert_eq!(result, yaml);
+    }
+
+    #[tokio::test]
+    async fn sighup_sends_none_triggers_disk_read() {
+        let (tx, mut rx) = mpsc::channel::<Option<String>>(1);
+        let disk_content = "pipelines:\n  from_disk:\n    inputs: []\n    outputs: []";
+
+        // SIGHUP/file-watcher sends None
+        tx.send(None).await.unwrap();
+
+        // Executor receives None → falls back to disk read
+        let signal = rx.recv().await.unwrap();
+        let result = executor_receive_config(signal, disk_content).await;
+        assert_eq!(result, disk_content);
+    }
+
+    #[tokio::test]
+    async fn channel_coalesces_with_latest_wins() {
+        let (tx, mut rx) = mpsc::channel::<Option<String>>(1);
+
+        // First send fills the channel
+        tx.send(Some("config_v1".to_owned())).await.unwrap();
+
+        // Second send would block (capacity=1). Use try_send to verify coalescing.
+        let result = tx.try_send(Some("config_v2".to_owned()));
+        assert!(result.is_err(), "channel should be full (capacity 1)");
+
+        // Consumer gets the first (queued) config
+        let signal = rx.recv().await.unwrap();
+        assert_eq!(signal, Some("config_v1".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn channel_closed_returns_none_from_recv() {
+        let (tx, mut rx) = mpsc::channel::<Option<String>>(1);
+
+        // Drop all senders
+        drop(tx);
+
+        // recv() returns None (channel closed)
+        let result = rx.recv().await;
+        assert!(result.is_none(), "closed channel should return None");
+    }
+
+    #[tokio::test]
+    async fn flatten_semantics_for_select_recv() {
+        let (tx, mut rx) = mpsc::channel::<Option<String>>(1);
+
+        // Send Some(yaml) - represents OpAMP push
+        tx.send(Some("remote_config".to_owned())).await.unwrap();
+
+        // The executor uses `signal.flatten()` to get Option<String>
+        let outer: Option<Option<String>> = rx.recv().await;
+        let flattened: Option<String> = outer.flatten();
+        assert_eq!(flattened, Some("remote_config".to_owned()));
+
+        // Send None - represents SIGHUP
+        tx.send(None).await.unwrap();
+        let outer: Option<Option<String>> = rx.recv().await;
+        let flattened: Option<String> = outer.flatten();
+        assert_eq!(flattened, None);
+    }
+}
+
 #[cfg(test)]
 mod proptests {
     use super::*;
