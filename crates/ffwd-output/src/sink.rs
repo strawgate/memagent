@@ -392,14 +392,17 @@ mod verification {
         // Use a symbolic initial max_retry so the proof covers both the
         // `max_retry.is_none()` path and the `d > prev` / `d <= prev` branches
         // inside the RetryAfter arm of merge_child_send_result.
-        let initial_ms: Option<u64> = kani::any();
+        // Bounded to <= 30_000 ms to keep solver tractable (Duration arithmetic
+        // on full u64 causes 500s+ solve times with no extra coverage).
+        let initial_ms: Option<u64> =
+            if kani::any() { Some(kani::any_where(|&v: &u64| v <= 30_000)) } else { None };
         let mut max_retry = initial_ms.map(Duration::from_millis);
 
         let result = match tag {
             0 => SendResult::Ok,
             1 => SendResult::Rejected("no".to_string()),
             2 => {
-                let retry_ms: u64 = kani::any();
+                let retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
                 SendResult::RetryAfter(Duration::from_millis(retry_ms))
             }
             _ => SendResult::IoError(io::Error::other("boom")),

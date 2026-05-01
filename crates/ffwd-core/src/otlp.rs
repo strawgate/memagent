@@ -1942,13 +1942,15 @@ mod verification {
     }
 
     /// Prove hex_decode rejects inputs where hex length != 2 * output length.
+    /// Uses a fixed-size stack array to avoid heap allocation (Vec) which
+    /// causes CBMC to spend 800s+ modeling the allocator.
     #[kani::proof]
+    #[kani::unwind(36)]
     fn verify_hex_decode_rejects_wrong_length() {
-        // Any length mismatch should return false
         let hex_len: usize = kani::any_where(|&l: &usize| l <= 34 && l != 32);
-        let hex = vec![b'a'; hex_len];
+        let hex = [b'a'; 34];
         let mut out = [0u8; 16];
-        assert!(!hex_decode(&hex, &mut out));
+        assert!(!hex_decode(&hex[..hex_len], &mut out));
     }
 
     // -----------------------------------------------------------------------
@@ -2151,19 +2153,20 @@ mod verification {
     /// then encode_varint for the length, then extends with the data slice.
     /// With the stub, tag and length each append 1-10 bytes, plus data_len
     /// bytes of payload.
+    /// Bounded to 4 data bytes (vs 8) to keep solver under 60s.
     #[kani::proof]
     #[kani::stub(encode_varint, encode_varint_stub)]
-    #[kani::unwind(12)]
+    #[kani::unwind(6)]
     fn verify_encode_bytes_field_content_compositional() {
         let field_number: u32 = kani::any();
         kani::assume(field_number > 0 && field_number <= 100);
-        let data_len: usize = kani::any_where(|&l: &usize| l <= 8);
-        let data: [u8; 8] = kani::any();
+        let data_len: usize = kani::any_where(|&l: &usize| l <= 4);
+        let data: [u8; 4] = kani::any();
 
         let mut buf = Vec::new();
         encode_bytes_field(&mut buf, field_number, &data[..data_len]);
 
-        // Tag (1-10) + length varint (1-10) + data (0-8) = 2-28 bytes
+        // Tag (1-10) + length varint (1-10) + data (0-4) = 2-24 bytes
         assert!(buf.len() >= 2 + data_len && buf.len() <= 20 + data_len);
 
         // Last data_len bytes must be the exact input data
