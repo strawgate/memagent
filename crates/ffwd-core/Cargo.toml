@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Gate expensive Kani proofs (>30s solver time) so PR CI stays fast.
+# Push-to-main and nightly runs use --features kani-slow to verify everything.
+kani-slow = []
+
 [lib]
 doctest = false
 

@@ -1531,6 +1531,10 @@ mod verification {
     /// Prove parse_severity ONLY returns non-Unspecified for the 10
     /// recognized level strings (6 standard + 4 aliases, any case).
     /// No false positives.
+    ///
+    /// Gated behind `kani-slow`: 10 case-insensitive comparisons over
+    /// symbolic [u8; 8] takes ~59s in the solver.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(9)] // eq_ignore_case_match: Zip over ≤8-byte targets + 1 terminator
     pub(super) fn verify_parse_severity_no_false_positives() {
@@ -2242,6 +2246,9 @@ mod verification {
 
     /// Oracle equivalence: `skip_field` matches `ffwd_kani::proto::skip_field_oracle`
     /// for all bounded byte inputs and valid wire types, including the EOF boundary.
+    ///
+    /// Gated behind `kani-slow`: [u8; 32] symbolic + varint decode loops takes >30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(22)]
     pub(super) fn verify_skip_field_vs_oracle() {
@@ -2282,6 +2289,9 @@ mod verification {
 
     /// No-panic proof: `skip_field` never panics for any bounded input and any wire type
     /// (including unsupported values).
+    ///
+    /// Gated behind `kani-slow`: [u8; 32] symbolic + unwind 36 takes >30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(36)]
     pub(super) fn verify_skip_field_no_panic() {

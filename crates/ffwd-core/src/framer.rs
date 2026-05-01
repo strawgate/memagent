@@ -200,6 +200,9 @@ mod verification {
     }
 
     /// Prove NewlineFramer line ranges are valid sub-ranges of input.
+    ///
+    /// Gated behind `kani-slow`: [u8; 32] symbolic + unwind 34 + kissat takes >30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(34)]

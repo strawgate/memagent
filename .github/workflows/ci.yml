@@ -377,21 +377,26 @@ jobs:
   # -------------------------------------------------------------------------
   # Kani formal verification — split into four parallel shards by layer so
   # the slowest one finishes within the hosted-runner budget.
+  #
+  # Fast vs slow proofs:
+  #   Proofs gated behind `kani-slow` feature (>30s solver time) run only
+  #   on push-to-main and ci:full PRs. PR CI runs fast proofs only (~5 min
+  #   wall-clock for core shard vs ~45+ min with slow proofs).
+  #
   # Observed proof counts and timing constraints:
-  #   kani-core:           145 proofs (ffwd-core + ffwd-kani)
-  #                        Heavy proofs: cri(unwind 100), structural(unwind 65)
-  #   kani-arrow:           24 proofs (ffwd-arrow)
-  #                        SIMD/accumulator proofs ~15-40s each
-  #   kani-runtime-types:   63 proofs (ffwd-runtime + ffwd-types)
+  #   kani-core:           ~130 fast + ~15 slow proofs (ffwd-core + ffwd-kani)
+  #                        Slow: structural(unwind 65), cri(unwind 52), severity
+  #   kani-arrow:           24 proofs (ffwd-arrow) — all fast
+  #   kani-runtime-types:   63 proofs (ffwd-runtime + ffwd-types) — all fast
   #   kani-io-output:       59 proofs (ffwd-io + ffwd-output +
-  #                        ffwd-diagnostics + ffwd binary)
+  #                        ffwd-diagnostics + ffwd binary) — all fast
   #
   # All shards use --jobs 2 (not 3 or 4). CBMC solver processes consume
   # 3-5 GB each; at --jobs 3+ on 16 GB runners, memory pressure causes
   # OOM kills or runner preemption (manifests as "runner shutdown signal"
   # after only minutes). --jobs 2 keeps peak memory under ~10 GB.
   #
-  # The core shard gets 120 min (145 proofs with high unwind bounds).
+  # The core shard gets 120 min (slow proofs need it on main).
   # Arrow gets 60 min (finishes in ~5 min, but needs compilation time).
   # Runtime and IO shards get 120 min for cold-cache variance.
   # -------------------------------------------------------------------------
@@ -424,6 +429,7 @@ jobs:
             -Z stubbing
             -p ffwd-kani
             -p ffwd-core
+            ${{ (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && '--features kani-slow' || '' }}
 
   kani-arrow:
     name: Kani proofs (arrow)

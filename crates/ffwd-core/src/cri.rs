@@ -893,6 +893,9 @@ mod verification {
     }
 
     /// Prove the configurable plain-text field wrapper path never panics.
+    ///
+    /// Gated behind `kani-slow`: [u8; 48] symbolic + unwind 52 takes >60s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(52)]
     #[kani::solver(kissat)]
@@ -1128,6 +1131,9 @@ mod verification {
     ///   - verify_write_json_line_no_prefix_quote_escape
     ///   - verify_write_json_line_no_prefix_backslash_escape
     ///   - verify_write_json_line_no_prefix_control_escape
+    ///
+    /// Gated behind `kani-slow`: unwind 52 through JSON escaping takes >30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(52)]
     fn verify_write_json_line_parametric() {
@@ -1236,6 +1242,9 @@ mod verification {
     /// shared logic bugs in both implementations.
     /// Bounded to 8 bytes (from 16) to keep solver under 30s. Each byte can
     /// expand to 6 chars (\uXXXX), so worst case = 48 output bytes.
+    ///
+    /// Gated behind `kani-slow`: [u8; 8] + unwind 50 through escape logic ~30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(50)]
     pub(super) fn verify_json_escape_bytes_vs_oracle() {

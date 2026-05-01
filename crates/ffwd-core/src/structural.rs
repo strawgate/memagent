@@ -711,6 +711,10 @@ mod verification {
 
     /// Oracle proof: prefix_xor matches naive bit-by-bit running XOR
     /// for ALL u64 inputs. Exhaustive — no gap.
+    ///
+    /// Gated behind `kani-slow`: 65-unwind loop over symbolic u64 takes >30s.
+    /// PR CI runs the fast `verify_prefix_xor_vs_oracle` instead.
+    #[cfg(feature = "kani-slow")]
     #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(65)] // proof loop: while i < 64
@@ -743,6 +747,9 @@ mod verification {
     /// Most critical proof in the codebase — if escape detection is
     /// wrong, the scanner silently misparses every JSON string with
     /// backslashes.
+    ///
+    /// Gated behind `kani-slow`: three symbolic u64 + 65-unwind takes >60s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(65)]
     #[kani::solver(kissat)]
@@ -793,6 +800,9 @@ mod verification {
     /// This formally links the production function to the canonical oracle in ffwd-kani,
     /// enabling downstream consumers of `#[verified(kani = "verify_compute_real_quotes_vs_oracle")]`
     /// to inherit the proof without re-verification.
+    ///
+    /// Gated behind `kani-slow`: three symbolic u64 + 65-unwind takes >60s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(65)]
     #[kani::solver(kissat)]
@@ -818,6 +828,9 @@ mod verification {
     /// for ALL u64 inputs.
     ///
     /// This formally links the production function to the canonical oracle in ffwd-kani.
+    ///
+    /// Gated behind `kani-slow`: symbolic u64 + 65-unwind takes >30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(65)]
     #[kani::solver(kissat)]
@@ -835,6 +848,9 @@ mod verification {
     /// 64-byte block and any needle. Checks one arbitrary position per
     /// run — the function is a simple loop so correctness at one
     /// arbitrary position implies correctness at all.
+    ///
+    /// Gated behind `kani-slow`: [u8; 64] symbolic + 65-unwind takes >60s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(65)]
     #[kani::solver(cadical)]
@@ -852,6 +868,9 @@ mod verification {
     /// Consistency: find_structural_chars_scalar matches find_char_mask
     /// for the quote character. Only checks one of 10 characters — all
     /// use identical match-arm logic.
+    ///
+    /// Gated behind `kani-slow`: [u8; 64] symbolic + 65-unwind takes >60s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(65)]
     #[kani::solver(cadical)]

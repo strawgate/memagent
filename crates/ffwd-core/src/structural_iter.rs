@@ -586,6 +586,9 @@ mod verification {
     ///
     /// Uses 8-byte input (1 block, padded to 64) to keep the proof
     /// tractable while exercising the full load_block + advance pipeline.
+    ///
+    /// Gated behind `kani-slow`: full StructuralIter pipeline + 66-unwind takes >30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(66)]
     #[kani::solver(kissat)]

@@ -2621,6 +2621,9 @@ mod verification {
 
     /// next_quote on a single block: if found, the position has a set bit
     /// in the bitmask. If not found, no bits are set in [from, end).
+    ///
+    /// Gated behind `kani-slow`: symbolic u64 bitmask + 66-unwind takes >30s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(66)] // inner None-branch loop: up to 64 iterations (end≤64) + 2 margin
     #[kani::solver(kissat)]

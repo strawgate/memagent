@@ -258,6 +258,9 @@ mod verification {
     ///
     /// By restricting to digit-only inputs, the solver state space is
     /// dramatically smaller than fully symbolic 20-byte arrays.
+    ///
+    /// Gated behind `kani-slow`: 20-byte constrained array + overflow math ~30-60s.
+    #[cfg(feature = "kani-slow")]
     #[kani::proof]
     #[kani::unwind(22)]
     #[kani::solver(kissat)]
