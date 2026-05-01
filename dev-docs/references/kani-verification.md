@@ -164,6 +164,102 @@ already-verified contracts.
   too low yields inconclusive behavior.
 - Prefer proving smaller pure components compositionally over one monolith.
 
+## Performance Best Practices (Avoiding Slow Proofs)
+
+These patterns emerged from profiling our CI (where 5 proofs consumed 88% of
+solver time) and from Firecracker's production Kani usage:
+
+### Avoid heap allocation in proofs
+
+`Vec`, `String`, `to_string()` force CBMC to model the heap allocator, which
+dramatically increases SAT formula size. Prefer stack-allocated arrays:
+
+```rust
+// BAD: 500s+ to solve (models allocator)
+let v: Vec<u8> = vec![kani::any(); 16];
+
+// GOOD: ~30s (pure stack)
+let a: [u8; 16] = kani::any();
+```
+
+### Bound Duration / large integer arithmetic
+
+Full `u64` symbolic arithmetic (especially `checked_mul`, `checked_add` chains)
+creates massive SAT formulas. Bound to realistic ranges:
+
+```rust
+// BAD: 556s (full u64 Duration)
+let ms: u64 = kani::any();
+let d = Duration::from_millis(ms);
+
+// GOOD: ~5s (bounded to 30s)
+let ms: u64 = kani::any_where(|&v| v <= 30_000);
+let d = Duration::from_millis(ms);
+```
+
+### Constrain inputs when testing specific properties
+
+For overflow boundary proofs, don't use fully symbolic arrays. Constrain to
+the relevant input class:
+
+```rust
+// Tests overflow with 20-byte fully symbolic: ~534s
+let bytes: [u8; 20] = kani::any();
+
+// Tests overflow with digit-only constraint: ~30s
+let mut bytes = [0u8; 20];
+for i in 0..len {
+    let d: u8 = kani::any();
+    kani::assume(d >= b'0' && d <= b'9');
+    bytes[i] = d;
+}
+```
+
+### Input partitioning for expensive proofs
+
+If one proof covers a wide domain and takes >60s, split it into focused proofs
+that partition the input space:
+
+- `verify_fn_small_inputs` (len 0-10, fully symbolic)
+- `verify_fn_overflow_boundary` (len 18-20, constrained digits)
+
+### Function contracts for repeated callees
+
+When multiple proofs call the same expensive function, verify it once with a
+contract and stub it in callers. This is Firecracker's key scaling technique:
+
+```rust
+#[cfg_attr(kani, kani::requires(x > 0))]
+#[cfg_attr(kani, kani::ensures(|&result| result != 0 && x % result == 0))]
+fn expensive_fn(x: u64) -> u64 { ... }
+
+#[kani::proof_for_contract(expensive_fn)]
+fn check_expensive_fn() {
+    let x: u64 = kani::any();
+    expensive_fn(x);
+}
+
+// Callers get free speedup:
+#[kani::proof]
+#[kani::stub_verified(expensive_fn)]
+fn check_caller() {
+    let v: u64 = kani::any();
+    caller_of_expensive(v);
+}
+```
+
+Our `encode_varint_stub` in `otlp.rs` is a manual version of this pattern.
+When Kani stabilizes `modifies` clause support for `&mut Vec<u8>`, we should
+migrate to proper `proof_for_contract` + `stub_verified`.
+
+### CI resource constraints
+
+- CBMC solver processes use 3-5 GB each
+- GitHub Actions runners have ~7 GB free (16 GB total minus OS)
+- `--jobs 2` is the safe maximum (peak ~10 GB)
+- `--jobs 3` causes sporadic OOM; `--jobs 4` guarantees OOM
+- OOM manifests as "runner has received a shutdown signal" with lost logs
+
 ## Failure Triage
 
 - `cover!` unsat:
