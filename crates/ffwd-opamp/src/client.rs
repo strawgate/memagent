@@ -20,8 +20,6 @@ struct SharedState {
     effective_config: String,
     /// Whether the last remote config was applied successfully.
     last_config_applied: bool,
-    /// The last remote config received from the server (if any).
-    pending_remote_config: Option<String>,
 }
 
 /// A lightweight handle for updating OpAMP state from outside the client task.
@@ -54,12 +52,12 @@ impl OpampStateHandle {
 /// ```ignore
 /// let client = OpampClient::new(opamp_config, identity, reload_tx);
 /// // Spawn in a background task:
-/// tokio::spawn(async move { client.run(shutdown).await });
+/// tokio::spawn(async move { client.run(shutdown, data_dir, config_path, base_path).await });
 /// ```
 pub struct OpampClient {
     config: OpampConfig,
     identity: AgentIdentity,
-    reload_tx: tokio::sync::mpsc::Sender<()>,
+    reload_tx: tokio::sync::mpsc::Sender<Option<String>>,
     state: Arc<Mutex<SharedState>>,
 }
 
@@ -68,16 +66,16 @@ impl OpampClient {
     ///
     /// - `config`: OpAMP configuration (endpoint, poll interval, etc.)
     /// - `identity`: Agent identity (instance UID, version, service name)
-    /// - `reload_tx`: Channel to trigger config reload in the bootstrap loop
+    /// - `reload_tx`: Channel to deliver config reload signals. `Some(yaml)` for
+    ///   OpAMP-pushed configs, `None` for restart commands (re-read from disk).
     pub fn new(
         config: OpampConfig,
         identity: AgentIdentity,
-        reload_tx: tokio::sync::mpsc::Sender<()>,
+        reload_tx: tokio::sync::mpsc::Sender<Option<String>>,
     ) -> Self {
         let state = Arc::new(Mutex::new(SharedState {
             effective_config: String::new(),
             last_config_applied: true,
-            pending_remote_config: None,
         }));
 
         Self {
@@ -147,14 +145,18 @@ impl OpampClient {
     /// Run the OpAMP client loop until shutdown is signalled.
     ///
     /// - `shutdown`: Cancellation token to stop the client
-    /// - `data_dir`: Data directory for state persistence
-    /// - `config_path`: Path where accepted remote config is written (atomic rename).
-    ///   The bootstrap reload loop re-reads this path on reload signals.
+    /// - `data_dir`: Data directory for state persistence (reserved for future use)
+    /// - `config_path`: Fallback path used to derive the validation base directory
+    ///   when `config_base_path` is not provided (uses the parent directory).
+    /// - `config_base_path`: Base directory for resolving relative paths during
+    ///   config validation. In supervised mode this should be the child's real
+    ///   config directory (not the staging file's parent).
     pub async fn run(
         self,
         shutdown: tokio_util::sync::CancellationToken,
-        data_dir: Option<&Path>,
+        _data_dir: Option<&Path>,
         config_path: Option<&Path>,
+        config_base_path: Option<&Path>,
     ) -> Result<(), OpampError> {
         tracing::info!(
             endpoint = %self.config.endpoint,
@@ -167,17 +169,19 @@ impl OpampClient {
         let state = Arc::clone(&self.state);
         let accept_remote_config = self.config.accept_remote_config;
         let reload_tx = self.reload_tx.clone();
-        let remote_config_path = config_path.map_or_else(
-            || Self::remote_config_path_for_identity(data_dir, &self.identity),
-            PathBuf::from,
-        );
 
-        // Create the OpAMP API callbacks handler.
+        // Derive validation base path: prefer explicit config_base_path (supervised mode),
+        // fall back to config_path's parent, then data_dir.
+        let validation_base_path = config_base_path.map(PathBuf::from).or_else(|| {
+            config_path
+                .and_then(|p| Path::new(p).parent())
+                .map(PathBuf::from)
+        });
         let mut handler = OpampHandler {
             state,
             accept_remote_config,
             reload_tx,
-            remote_config_path,
+            validation_base_path,
         };
 
         let connection_settings = ConnectionSettings {
@@ -191,9 +195,17 @@ impl OpampClient {
 
         let mut api = Api::new(connection_settings, Box::new(&mut handler));
 
+        // Timeout for individual poll requests — prevents hanging on unresponsive servers.
+        let poll_timeout = Duration::from_secs(30);
+
         // Initial poll: report identity/status to server immediately on connect
         // rather than waiting for the first poll_interval to elapse.
-        api.poll().await;
+        match tokio::time::timeout(poll_timeout, api.poll()).await {
+            Ok(()) => {}
+            Err(_) => {
+                tracing::warn!("opamp: initial poll timed out after {poll_timeout:?}");
+            }
+        }
 
         // Main polling loop.
         loop {
@@ -203,7 +215,12 @@ impl OpampClient {
                     break;
                 }
                 () = tokio::time::sleep(poll_interval) => {
-                    api.poll().await;
+                    match tokio::time::timeout(poll_timeout, api.poll()).await {
+                        Ok(()) => {}
+                        Err(_) => {
+                            tracing::warn!("opamp: poll timed out after {poll_timeout:?}");
+                        }
+                    }
                 }
             }
         }
@@ -216,8 +233,10 @@ impl OpampClient {
 struct OpampHandler {
     state: Arc<Mutex<SharedState>>,
     accept_remote_config: bool,
-    reload_tx: tokio::sync::mpsc::Sender<()>,
-    remote_config_path: PathBuf,
+    reload_tx: tokio::sync::mpsc::Sender<Option<String>>,
+    /// Base directory for validating config (resolving relative paths).
+    /// In supervised mode this is the child's config dir, not the staging dir.
+    validation_base_path: Option<PathBuf>,
 }
 
 impl ApiCallbacks for &mut OpampHandler {
@@ -273,10 +292,10 @@ impl ApiCallbacks for &mut OpampHandler {
     ) -> Result<Option<AgentToServer>, ApiClientError> {
         if let Some(ref command) = inbound.command {
             tracing::info!(command_type = command.r#type, "opamp: received command");
-            // Command type 1 = Restart
+            // Command type 1 = Restart → re-read config from disk
             if command.r#type == 1 {
                 tracing::info!("opamp: restart command received, triggering reload");
-                let _ = self.reload_tx.try_send(());
+                let _ = self.reload_tx.try_send(None);
             }
         }
         Ok(None)
@@ -325,46 +344,45 @@ impl ApiCallbacks for &mut OpampHandler {
             "opamp: received remote configuration"
         );
 
-        // Validate before writing.
-        let base_path = self.remote_config_path.parent();
-        match ffwd_config::Config::load_str_with_base_path(&yaml, base_path) {
-            Ok(_) => {
-                // Atomic write: temp file → rename to target path so the bootstrap
-                // reload loop reads the new config when re-reading from disk.
-                let target = &self.remote_config_path;
-                let tmp_path = target.with_extension("yaml.tmp");
-                if let Err(e) = std::fs::write(&tmp_path, &yaml) {
-                    tracing::error!(
-                        error = %e,
-                        path = %tmp_path.display(),
-                        "opamp: failed to write temp config"
+        // Validate before signaling reload. Use the config base path (child's
+        // config dir in supervised mode) rather than the staging file's parent.
+        // Wrapped in catch_unwind to prevent a validation panic from killing the
+        // entire OpAMP task (which would permanently disable remote config).
+        let base_path = self.validation_base_path.as_deref();
+        let validation_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ffwd_config::ValidatedConfig::from_yaml(&yaml, base_path)
+        }));
+        match validation_result {
+            Ok(Ok(_validated)) => {
+                // Send the validated YAML directly on the channel — no shared state,
+                // no split-brain race. The consumer gets the config atomically with
+                // the reload signal. Persistence to disk happens in the consumer
+                // after the config is committed (for crash recovery).
+                tracing::info!("opamp: validated remote config, triggering reload");
+                if self.reload_tx.try_send(Some(yaml)).is_ok() {
+                    // Only mark as not-applied once the signal is successfully queued.
+                    if let Ok(mut state) = self.state.lock() {
+                        state.last_config_applied = false;
+                    }
+                } else {
+                    // Channel full: a reload is already in progress. This config is
+                    // intentionally dropped — the server will re-push on the next poll
+                    // because last_config_applied remains true (server sees config not
+                    // yet acknowledged). This is safe debounce behavior.
+                    tracing::debug!(
+                        "opamp: reload channel full, config will be re-delivered on next poll"
                     );
-                    return Ok(None);
-                }
-                if let Err(e) = std::fs::rename(&tmp_path, target) {
-                    tracing::error!(
-                        error = %e,
-                        path = %target.display(),
-                        "opamp: failed to rename config into place"
-                    );
-                    let _ = std::fs::remove_file(&tmp_path);
-                    return Ok(None);
-                }
-                tracing::info!(
-                    path = %target.display(),
-                    "opamp: wrote remote config, triggering reload"
-                );
-                let _ = self.reload_tx.try_send(());
-
-                if let Ok(mut state) = self.state.lock() {
-                    state.pending_remote_config = Some(yaml);
-                    state.last_config_applied = false;
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::error!(
                     error = %e,
                     "opamp: received invalid remote config, rejecting"
+                );
+            }
+            Err(_panic) => {
+                tracing::error!(
+                    "opamp: config validation panicked — rejecting config (task continues)"
                 );
             }
         }

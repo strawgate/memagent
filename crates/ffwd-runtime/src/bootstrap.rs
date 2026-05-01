@@ -88,7 +88,9 @@ pub async fn run_pipelines(
     // Capacity 1 intentionally coalesces simultaneous SIGHUP/file-watcher/
     // diagnostics/OpAMP reload signals into one pending reload. Increasing this
     // changes behavior from debouncing to buffering distinct reload events.
-    let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel::<()>(1);
+    // `Some(yaml)` = OpAMP-pushed config (use directly, no disk read).
+    // `None` = SIGHUP/file-watcher/HTTP/restart command (re-read from disk).
+    let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
 
     #[cfg(unix)]
     let (mut sigterm, mut sighup, mut sigusr1, mut sigusr2) = {
@@ -153,7 +155,7 @@ pub async fn run_pipelines(
                             "{}ffwd{}: SIGHUP received — reloading configuration",
                             yellow(use_color), reset(use_color),
                         );
-                        let _ = reload_tx_for_signal.try_send(());
+                        let _ = reload_tx_for_signal.try_send(None);
                     }
                 }
             }
@@ -247,7 +249,7 @@ pub async fn run_pipelines(
                                 // emitted a transient event while the file was absent).
                                 if config_path.exists() {
                                     tracing::info!("config watcher: file changed, triggering reload");
-                                    let _ = reload_tx_for_watcher.try_send(());
+                                    let _ = reload_tx_for_watcher.try_send(None);
                                 }
                             }
                         }
@@ -289,19 +291,21 @@ pub async fn run_pipelines(
         let opamp_state = client.state_handle();
         opamp_state.set_effective_config(options.config_yaml);
         let opamp_config_path = PathBuf::from(options.config_path);
-        tokio::spawn(async move {
+        let opamp_base_path = opamp_config_path.parent().map(PathBuf::from);
+        let opamp_handle = tokio::spawn(async move {
             if let Err(e) = client
                 .run(
                     shutdown_for_opamp,
                     data_dir.as_deref(),
                     Some(opamp_config_path.as_path()),
+                    opamp_base_path.as_deref(),
                 )
                 .await
             {
                 tracing::error!(error = %e, "opamp: client exited with error");
             }
         });
-        Some(opamp_state)
+        Some((opamp_state, opamp_handle))
     } else {
         None
     };
@@ -352,331 +356,433 @@ pub async fn run_pipelines(
         .build();
 
     let mut current_config = config;
-    let mut pending_config: Option<ffwd_config::Config> = None;
-    let mut pending_effective_yaml: Option<String> = None;
-    let mut pending_reload_attempt = false;
-    let mut first_run = true;
+    let mut pending: Option<ffwd_config::ValidatedConfig> = None;
+    // YAML received directly from OpAMP on the reload channel (Some(yaml))
+    // vs None meaning re-read from disk (SIGHUP/file-watcher/HTTP).
+    let mut reload_yaml: Option<String> = None;
     let mut pipeline_metrics: Vec<Arc<ffwd_diagnostics::diagnostics::PipelineMetrics>> = Vec::new();
     // Suppress unused_assignments: initial empty value is overwritten in the
     // first loop iteration, but the binding must exist before the loop.
     let _ = &pipeline_metrics;
 
-    'reload: loop {
-        // ── Build pipelines ──
-        // Use pending_config if available (from a successful reload validation),
-        // otherwise use current_config (for first_run or retry after build failure).
-        let build_config = pending_config.as_ref().unwrap_or(&current_config);
-        let build_data_dir = build_config.storage.data_dir.as_ref().map(PathBuf::from);
-        let mut pipelines = Vec::new();
-        for (name, pipe_cfg) in &build_config.pipelines {
-            match Pipeline::from_config_with_data_dir(
-                name,
-                pipe_cfg,
-                &meter,
-                base_path,
-                build_data_dir.as_deref(),
-            ) {
-                Ok(pipeline) => pipelines.push(pipeline),
-                Err(e) => {
-                    if first_run {
-                        return Err(RuntimeError::Config(format!("pipeline '{name}': {e}")));
+    use crate::reload::{Effect, Event, ReloadCoordinator, State};
+    let mut coordinator = ReloadCoordinator::new(PathBuf::from(options.config_path));
+
+    // ── Main state machine loop ──
+    // The coordinator drives transitions; this loop executes the effects.
+    loop {
+        match coordinator.state().clone() {
+            State::Starting | State::Building => {
+                // Build pipelines from pending (new config) or current (fallback).
+                let build_config = pending.as_ref().map_or(&current_config, |v| v.config());
+                let build_data_dir = build_config.storage.data_dir.as_ref().map(PathBuf::from);
+                let mut pipelines = Vec::new();
+                let mut build_failed = false;
+
+                for (name, pipe_cfg) in &build_config.pipelines {
+                    match Pipeline::from_config_with_data_dir(
+                        name,
+                        pipe_cfg,
+                        &meter,
+                        base_path,
+                        build_data_dir.as_deref(),
+                    ) {
+                        Ok(pipeline) => pipelines.push(pipeline),
+                        Err(e) => {
+                            let effects = coordinator.step(Event::BuildFailed {
+                                pipeline: name.clone(),
+                                error: e.clone(),
+                            });
+                            for effect in effects {
+                                match effect {
+                                    Effect::FatalShutdown(msg) => {
+                                        return Err(RuntimeError::Config(msg));
+                                    }
+                                    Effect::ReportReloadError(msg) => {
+                                        tracing::error!(
+                                            error = %msg,
+                                            "config reload failed: pipeline build error"
+                                        );
+                                        reload_error.add(1, &[]);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // On build failure, discard pending and retry.
+                            pending = None;
+                            build_failed = true;
+                            break;
+                        }
                     }
-                    tracing::error!(
-                        pipeline = %name,
-                        error = %e,
-                        "config reload failed: pipeline build error"
-                    );
-                    // Discard the failed config and revert to current_config for
-                    // the next attempt — ensures we can rebuild working pipelines.
-                    pending_config = None;
-                    pending_effective_yaml = None;
-                    pending_reload_attempt = false;
-                    reload_error.add(1, &[]);
-                    continue 'reload;
                 }
-            }
-        }
-        // Pipeline build succeeded — commit the pending config.
-        if let Some(committed) = pending_config.take() {
-            current_config = committed;
-            if pending_reload_attempt {
-                reload_success.add(1, &[]);
-                #[cfg(feature = "opamp")]
-                if let Some(new_yaml) = pending_effective_yaml.take()
-                    && let Some(ref state) = opamp_client
-                {
-                    state.set_effective_config(&new_yaml);
+                if build_failed {
+                    continue;
                 }
-                #[cfg(not(feature = "opamp"))]
-                let _ = pending_effective_yaml.take();
-                pending_reload_attempt = false;
-            }
-        }
 
-        // ── Diagnostics server (first run only) ──
-        if first_run && let Some(ref addr) = current_config.server.diagnostics {
-            let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
-            server.set_config(options.config_path, options.config_yaml);
-            server.set_reload_trigger(reload_tx.clone());
-            let expose_config = std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG")
-                .or_else(|_| {
-                    std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {
-                        tracing::warn!(
-                            "LOGFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FFWD_UNSAFE_EXPOSE_CONFIG instead"
-                        );
-                    })
-                })
-                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-            server.set_config_endpoint_enabled(expose_config);
-            server.set_trace_buffer(trace_buf.clone());
-            for p in &pipelines {
-                server.add_pipeline(Arc::clone(p.metrics()));
-            }
-            #[cfg(unix)]
-            server.set_memory_stats_fn(jemalloc_stats);
-            let (handle, _) = server.start()?;
-            // Keep handle alive — we leak it intentionally (lives for the process).
-            // NOTE: After a config reload, the diagnostics server still holds references
-            // to old pipeline metrics. The dashboard may show stale data until the server
-            // is refactored to use ArcSwap or similar for live metric updates.
-            std::mem::forget(handle);
-            eprintln!();
-            eprintln!(
-                "  {}dashboard{}  http://{addr}",
-                bold(use_color),
-                reset(use_color)
-            );
-        }
+                // Pipeline build succeeded — process the transition.
+                // Capture first-run status before the step changes it.
+                let is_initial_startup = coordinator.is_first_run();
+                let effects = coordinator.step(Event::PipelinesBuilt);
+                for effect in &effects {
+                    match effect {
+                        Effect::CommitConfig => {
+                            if let Some(committed) = pending.take() {
+                                #[cfg(feature = "opamp")]
+                                if let Some((ref state, _)) = opamp_client {
+                                    state.set_effective_config(committed.effective_yaml());
+                                    // Persist to disk atomically for crash recovery.
+                                    // Uses temp file + rename to prevent partial writes.
+                                    // The temp name includes the PID to avoid conflicts if
+                                    // a stale tmp from a prior crash is still on disk.
+                                    let persist_path = PathBuf::from(options.config_path);
+                                    let persist_yaml = committed.effective_yaml().to_owned();
+                                    tokio::spawn(async move {
+                                        let tmp_path = persist_path.with_extension(format!(
+                                            "yaml.opamp-tmp.{}",
+                                            std::process::id()
+                                        ));
+                                        if let Err(e) =
+                                            tokio::fs::write(&tmp_path, &persist_yaml).await
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                path = %persist_path.display(),
+                                                "config reload: failed to write temp file for crash recovery"
+                                            );
+                                            return;
+                                        }
+                                        if let Err(e) =
+                                            tokio::fs::rename(&tmp_path, &persist_path).await
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                path = %persist_path.display(),
+                                                "config reload: failed to rename config for crash recovery"
+                                            );
+                                            let _ = tokio::fs::remove_file(&tmp_path).await;
+                                        }
+                                    });
+                                }
+                                current_config = committed.into_config();
+                            }
+                        }
+                        Effect::ReportReloadSuccess => {
+                            reload_success.add(1, &[]);
+                        }
+                        _ => {}
+                    }
+                }
 
-        pipeline_metrics = pipelines.iter().map(|p| Arc::clone(p.metrics())).collect();
-
-        // ── Print banner (first run only) ──
-        if first_run {
-            eprintln!(
-                "{}ffwd{} {}v{}{}",
-                bold(use_color),
-                reset(use_color),
-                dim(use_color),
-                options.version,
-                reset(use_color),
-            );
-
-            for (name, pipe_cfg) in &current_config.pipelines {
-                eprintln!();
-                eprintln!(
-                    "  {}✓{}  {}{name}{}",
-                    green(use_color),
-                    reset(use_color),
-                    bold(use_color),
-                    reset(use_color)
-                );
-                for input in &pipe_cfg.inputs {
+                if is_initial_startup && let Some(ref addr) = current_config.server.diagnostics {
+                    let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
+                    server.set_config(options.config_path, options.config_yaml);
+                    server.set_reload_trigger(reload_tx.clone());
+                    let expose_config = std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG")
+                        .or_else(|_| {
+                            std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {
+                                tracing::warn!(
+                                    "LOGFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FFWD_UNSAFE_EXPOSE_CONFIG instead"
+                                );
+                            })
+                        })
+                        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+                    server.set_config_endpoint_enabled(expose_config);
+                    server.set_trace_buffer(trace_buf.clone());
+                    for p in &pipelines {
+                        server.add_pipeline(Arc::clone(p.metrics()));
+                    }
+                    #[cfg(unix)]
+                    server.set_memory_stats_fn(jemalloc_stats);
+                    let (handle, _) = server.start()?;
+                    std::mem::forget(handle);
+                    eprintln!();
                     eprintln!(
-                        "     {}in{}   {}",
-                        dim(use_color),
-                        reset(use_color),
-                        input_label(input)
-                    );
-                }
-                if let Some(sql) = pipe_cfg.transform.as_deref() {
-                    let sql = sql.trim();
-                    let first_line = sql.lines().next().unwrap_or(sql);
-                    let truncated = if first_line.chars().count() > 100 {
-                        format!("{}…", first_line.chars().take(100).collect::<String>())
-                    } else {
-                        first_line.to_string()
-                    };
-                    eprintln!(
-                        "     {}sql{}  {truncated}",
-                        dim(use_color),
+                        "  {}dashboard{}  http://{addr}",
+                        bold(use_color),
                         reset(use_color)
                     );
                 }
-                for output in &pipe_cfg.outputs {
+
+                pipeline_metrics = pipelines.iter().map(|p| Arc::clone(p.metrics())).collect();
+
+                // ── Print banner ──
+                if is_initial_startup {
                     eprintln!(
-                        "     {}out{}  {}",
+                        "{}ffwd{} {}v{}{}",
+                        bold(use_color),
+                        reset(use_color),
+                        dim(use_color),
+                        options.version,
+                        reset(use_color),
+                    );
+
+                    for (name, pipe_cfg) in &current_config.pipelines {
+                        eprintln!();
+                        eprintln!(
+                            "  {}✓{}  {}{name}{}",
+                            green(use_color),
+                            reset(use_color),
+                            bold(use_color),
+                            reset(use_color)
+                        );
+                        for input in &pipe_cfg.inputs {
+                            eprintln!(
+                                "     {}in{}   {}",
+                                dim(use_color),
+                                reset(use_color),
+                                input_label(input)
+                            );
+                        }
+                        if let Some(sql) = pipe_cfg.transform.as_deref() {
+                            let sql = sql.trim();
+                            let first_line = sql.lines().next().unwrap_or(sql);
+                            let truncated = if first_line.chars().count() > 100 {
+                                format!("{}…", first_line.chars().take(100).collect::<String>())
+                            } else {
+                                first_line.to_string()
+                            };
+                            eprintln!(
+                                "     {}sql{}  {truncated}",
+                                dim(use_color),
+                                reset(use_color)
+                            );
+                        }
+                        for output in &pipe_cfg.outputs {
+                            eprintln!(
+                                "     {}out{}  {}",
+                                dim(use_color),
+                                reset(use_color),
+                                output_label(output)
+                            );
+                        }
+                    }
+                    eprintln!();
+                    let n = pipeline_metrics.len();
+                    let startup_ms = startup_start.elapsed().as_millis();
+                    eprintln!(
+                        "{}ready{} · {n} pipeline{} {}(started in {startup_ms}ms){}",
+                        green(use_color),
+                        reset(use_color),
+                        if n == 1 { "" } else { "s" },
                         dim(use_color),
                         reset(use_color),
-                        output_label(output)
+                    );
+                } else {
+                    let n = pipeline_metrics.len();
+                    eprintln!(
+                        "{}ffwd{}: config reloaded — {n} pipeline{} running",
+                        bold(use_color),
+                        reset(use_color),
+                        if n == 1 { "" } else { "s" },
                     );
                 }
-            }
-            eprintln!();
-            let n = pipelines.len();
-            let startup_ms = startup_start.elapsed().as_millis();
-            eprintln!(
-                "{}ready{} · {n} pipeline{} {}(started in {startup_ms}ms){}",
-                green(use_color),
-                reset(use_color),
-                if n == 1 { "" } else { "s" },
-                dim(use_color),
-                reset(use_color),
-            );
-        } else {
-            let n = pipelines.len();
-            eprintln!(
-                "{}ffwd{}: config reloaded — {n} pipeline{} running",
-                bold(use_color),
-                reset(use_color),
-                if n == 1 { "" } else { "s" },
-            );
-        }
 
-        first_run = false;
+                // ── Run pipelines (enter Running state) ──
+                let pipeline_shutdown = CancellationToken::new();
+                let mut handles = Vec::new();
+                let main_pipeline = pipelines.pop();
 
-        // ── Run pipelines ──
-        // Per-cycle shutdown token: cancelling this drains pipelines for reload
-        // without terminating the process.
-        let pipeline_shutdown = CancellationToken::new();
-        let mut handles = Vec::new();
-        let main_pipeline = pipelines.pop();
+                for mut pipeline in pipelines {
+                    let sd = pipeline_shutdown.clone();
+                    handles.push(tokio::spawn(async move { pipeline.run_async(&sd).await }));
+                }
 
-        for mut pipeline in pipelines {
-            let sd = pipeline_shutdown.clone();
-            handles.push(tokio::spawn(async move { pipeline.run_async(&sd).await }));
-        }
-
-        let reload_requested;
-        let mut cycle_error: Option<io::Error> = None;
-        if let Some(mut main_pipe) = main_pipeline {
-            tokio::select! {
-                result = main_pipe.run_async(&pipeline_shutdown) => {
-                    // Pipeline exited (natural completion or pipeline_shutdown was
-                    // cancelled from process-level shutdown).
-                    // Cancel so sibling tasks also stop.
-                    pipeline_shutdown.cancel();
-                    reload_requested = false;
-                    if let Err(ref e) = result {
-                        tracing::error!(error = %e, "main pipeline error");
-                        cycle_error = Some(io::Error::new(e.kind(), e.to_string()));
+                let mut cycle_error: Option<io::Error> = None;
+                let mut break_outer = false;
+                if let Some(mut main_pipe) = main_pipeline {
+                    tokio::select! {
+                        result = main_pipe.run_async(&pipeline_shutdown) => {
+                            pipeline_shutdown.cancel();
+                            if let Err(ref e) = result {
+                                tracing::error!(error = %e, "main pipeline error");
+                                cycle_error = Some(io::Error::new(e.kind(), e.to_string()));
+                            }
+                            // Join siblings first, then report completion.
+                            join_siblings(&mut handles, &reload_error).await?;
+                            let effects = coordinator.step(Event::PipelineCompleted { error: cycle_error });
+                            for effect in &effects {
+                                if let Effect::Shutdown = effect {
+                                    break_outer = true;
+                                }
+                            }
+                        }
+                        _ = shutdown.cancelled() => {
+                            pipeline_shutdown.cancel();
+                            let _ = main_pipe.run_async(&pipeline_shutdown).await;
+                            join_siblings(&mut handles, &reload_error).await?;
+                            // ShutdownRequested is handled uniformly by the coordinator.
+                            let _effects = coordinator.step(Event::ShutdownRequested);
+                            break_outer = true;
+                        }
+                        signal = reload_rx.recv() => {
+                            // Reload signal received. Capture the payload:
+                            // Some(yaml) = OpAMP pushed config, None = read from disk.
+                            reload_yaml = signal.flatten();
+                            // Drain pipelines.
+                            tracing::info!("config reload: draining pipelines");
+                            pipeline_shutdown.cancel();
+                            let drain_ok = tokio::time::timeout(
+                                Duration::from_secs(30),
+                                main_pipe.run_async(&pipeline_shutdown),
+                            )
+                            .await
+                            .is_ok();
+                            join_siblings(&mut handles, &reload_error).await?;
+                            // DrainPipelines already performed inline above.
+                            let _effects = coordinator.step(Event::ReloadRequested);
+                            if drain_ok {
+                                coordinator.step(Event::DrainCompleted);
+                            } else {
+                                tracing::error!("main pipeline did not drain within 30s");
+                                let effects = coordinator.step(Event::DrainTimedOut);
+                                for effect in effects {
+                                    if let Effect::FatalShutdown(msg) = effect {
+                                        reload_error.add(1, &[]);
+                                        return Err(RuntimeError::Io(io::Error::new(
+                                            io::ErrorKind::TimedOut,
+                                            msg,
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let effects = coordinator.step(Event::PipelineCompleted { error: None });
+                    for effect in &effects {
+                        if let Effect::Shutdown = effect {
+                            break_outer = true;
+                        }
                     }
                 }
-                _ = shutdown.cancelled() => {
-                    // Process-level shutdown (SIGTERM / Ctrl+C).
-                    pipeline_shutdown.cancel();
-                    let _ = main_pipe.run_async(&pipeline_shutdown).await;
-                    reload_requested = false;
+
+                if break_outer {
+                    // Coordinator is now in ShuttingDown — let the next
+                    // iteration handle error propagation via the ShuttingDown arm.
+                    continue;
                 }
-                _ = reload_rx.recv() => {
-                    // Reload requested: drain pipelines, then validate new config.
-                    //
-                    // NOTE: We drain BEFORE validation because `run_async` spawns
-                    // independent input tasks via `inputs.drain(..)`. Once the
-                    // tokio::select! drops the `run_async` future, those tasks are
-                    // orphaned — the only cleanup path is cancelling the token and
-                    // calling `run_async` again to flush buffered data. Pre-validation
-                    // without drain would require an architectural change to pipeline
-                    // lifecycle management. The drain cost is ~200ms in practice.
-                    tracing::info!("config reload: draining pipelines");
-                    pipeline_shutdown.cancel();
-                    if tokio::time::timeout(
-                        Duration::from_secs(30),
-                        main_pipe.run_async(&pipeline_shutdown),
-                    )
-                    .await
-                    .is_err()
-                    {
-                        tracing::error!("main pipeline did not drain within 30s");
-                        reload_error.add(1, &[]);
-                        return Err(RuntimeError::Io(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "main pipeline did not drain within 30s during reload",
-                        )));
+            }
+
+            State::Validating => {
+                // ── Re-read and validate config ──
+                reload_total.add(1, &[]);
+
+                // Use the in-memory YAML from the reload channel (OpAMP push)
+                // or fall back to reading from disk (SIGHUP/file-watcher/HTTP).
+                let new_yaml = if let Some(yaml) = reload_yaml.take() {
+                    tracing::info!("config reload: using in-memory config from OpAMP");
+                    yaml
+                } else {
+                    tracing::info!(path = %options.config_path, "config reload: reading config from disk");
+                    let config_path = options.config_path.to_owned();
+                    match tokio::fs::read_to_string(&config_path).await {
+                        Ok(y) => y,
+                        Err(e) => {
+                            tracing::error!(error = %e, "config reload: failed to read config file");
+                            let effects = coordinator
+                                .step(Event::ConfigInvalid(format!("failed to read config: {e}")));
+                            for effect in effects {
+                                if let Effect::ReportReloadError(_) = effect {
+                                    reload_error.add(1, &[]);
+                                }
+                            }
+                            continue;
+                        }
                     }
-                    reload_requested = true;
-                }
-            }
-        } else {
-            reload_requested = false;
-        }
+                };
 
-        // Join sibling pipeline tasks.
-        for mut h in handles {
-            match tokio::time::timeout(Duration::from_secs(30), &mut h).await {
-                Ok(Ok(Err(e))) => {
-                    tracing::error!(error = %e, "sibling pipeline error");
-                    if cycle_error.is_none() {
-                        cycle_error = Some(e);
+                let validated = match ffwd_config::ValidatedConfig::from_yaml(&new_yaml, base_path)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(error = %e, "config reload: invalid config");
+                        let effects =
+                            coordinator.step(Event::ConfigInvalid(format!("invalid config: {e}")));
+                        for effect in effects {
+                            if let Effect::ReportReloadError(_) = effect {
+                                reload_error.add(1, &[]);
+                            }
+                        }
+                        continue;
+                    }
+                };
+
+                let diff = ffwd_config::ConfigDiff::between(&current_config, validated.config());
+                if diff.is_empty() {
+                    tracing::info!("config reload: no changes detected");
+                    coordinator.step(Event::ConfigUnchanged);
+                } else {
+                    tracing::info!(
+                        added = diff.added.len(),
+                        removed = diff.removed.len(),
+                        changed = diff.changed.len(),
+                        unchanged = diff.unchanged.len(),
+                        "config reload: diff computed"
+                    );
+                    if diff.is_reloadable() {
+                        pending = Some(validated);
+                        coordinator.step(Event::ConfigValid);
+                    } else {
+                        tracing::error!(
+                            server_changed = diff.server_changed,
+                            opamp_changed = diff.opamp_changed,
+                            "config reload: process-lifetime setting changed; restart required"
+                        );
+                        let effects = coordinator.step(Event::ConfigNotReloadable(
+                            "process-lifetime setting changed".to_owned(),
+                        ));
+                        for effect in effects {
+                            if let Effect::ReportReloadError(_) = effect {
+                                reload_error.add(1, &[]);
+                            }
+                        }
                     }
                 }
-                Ok(Err(e)) => {
-                    tracing::error!(error = %e, "pipeline task panicked");
-                    if cycle_error.is_none() {
-                        cycle_error = Some(io::Error::other(e.to_string()));
-                    }
+            }
+
+            State::Draining => {
+                // Draining is handled inline in the Running select! arm above.
+                // If we reach this state in the outer loop, the executor stepped
+                // past drain without transitioning — this is a logic error.
+                debug_assert!(false, "drain is handled inside the Running select! block");
+                // In release: treat as if pipelines completed to unblock the loop.
+                coordinator.step(Event::DrainCompleted);
+            }
+
+            State::Running => {
+                // Running is handled inside the Starting/Building arm because
+                // the pipeline select! happens there. Reaching here means the
+                // loop iterated without a state change — logic error.
+                debug_assert!(false, "running is handled inside the build arm");
+                // In release: break to avoid busy-looping.
+                break;
+            }
+
+            State::ShuttingDown { error } => {
+                if let Some(msg) = error {
+                    return Err(RuntimeError::Io(io::Error::other(msg)));
                 }
-                Err(_) => {
-                    h.abort();
-                    let _ = h.await;
-                    tracing::error!("sibling pipeline did not drain within 30s");
-                    reload_error.add(1, &[]);
-                    return Err(RuntimeError::Io(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "sibling pipeline did not drain within 30s during reload",
-                    )));
-                }
-                Ok(Ok(Ok(()))) => {}
+                break;
             }
         }
-
-        if !reload_requested {
-            if let Some(err) = cycle_error {
-                return Err(RuntimeError::Io(err));
-            }
-            break;
-        }
-
-        // ── Re-read and validate config ──
-        reload_total.add(1, &[]);
-        tracing::info!(path = %options.config_path, "config reload: reading new config");
-        let new_yaml = match std::fs::read_to_string(options.config_path) {
-            Ok(y) => y,
-            Err(e) => {
-                reload_error.add(1, &[]);
-                tracing::error!(error = %e, "config reload: failed to read config file");
-                continue;
-            }
-        };
-        let new_config = match ffwd_config::Config::load_str_with_base_path(&new_yaml, base_path) {
-            Ok(c) => c,
-            Err(e) => {
-                reload_error.add(1, &[]);
-                tracing::error!(error = %e, "config reload: invalid config");
-                continue;
-            }
-        };
-
-        let diff = ffwd_config::ConfigDiff::between(&current_config, &new_config);
-        if diff.is_empty() {
-            tracing::info!("config reload: no changes detected");
-            // Still need to rebuild pipelines since the old ones were drained.
-        } else {
-            tracing::info!(
-                added = diff.added.len(),
-                removed = diff.removed.len(),
-                changed = diff.changed.len(),
-                unchanged = diff.unchanged.len(),
-                "config reload: diff computed"
-            );
-            if !diff.is_reloadable() {
-                reload_error.add(1, &[]);
-                tracing::error!(
-                    server_changed = diff.server_changed,
-                    opamp_changed = diff.opamp_changed,
-                    "config reload: process-lifetime setting changed; restart required"
-                );
-                continue;
-            }
-        }
-
-        pending_config = Some(new_config);
-        pending_effective_yaml = Some(new_yaml);
-        pending_reload_attempt = true;
-        // Loop back to rebuild pipelines with new config.
     }
 
     // ══════════ CLEANUP ══════════
     print_shutdown_stats(&pipeline_metrics, startup_start.elapsed(), use_color);
+
+    // Join the OpAMP task with a bounded timeout to prevent hanging on stuck polls.
+    #[cfg(feature = "opamp")]
+    if let Some((_, opamp_handle)) = opamp_client {
+        match tokio::time::timeout(Duration::from_secs(5), opamp_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "opamp: task panicked during shutdown");
+            }
+            Err(_) => {
+                tracing::warn!("opamp: task did not exit within 5s, abandoning");
+            }
+        }
+    }
 
     if let Err(e) = meter_provider.shutdown() {
         eprintln!(
@@ -693,6 +799,42 @@ pub async fn run_pipelines(
         );
     }
 
+    Ok(())
+}
+
+/// Join sibling pipeline tasks with a 30s timeout each.
+///
+/// Sibling pipeline I/O errors are logged but intentionally not propagated —
+/// during a reload cycle, individual pipeline failures are expected (the
+/// pipelines are being torn down and rebuilt). Only join/panic failures and
+/// hard timeouts are considered fatal. The coordinator state machine decides
+/// whether the overall system should shut down based on the main pipeline's
+/// completion event.
+async fn join_siblings(
+    handles: &mut Vec<tokio::task::JoinHandle<Result<(), io::Error>>>,
+    reload_error: &opentelemetry::metrics::Counter<u64>,
+) -> Result<(), RuntimeError> {
+    for mut h in handles.drain(..) {
+        match tokio::time::timeout(Duration::from_secs(30), &mut h).await {
+            Ok(Ok(Err(e))) => {
+                tracing::error!(error = %e, "sibling pipeline error");
+            }
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "pipeline task panicked");
+            }
+            Err(_) => {
+                h.abort();
+                let _ = h.await;
+                tracing::error!("sibling pipeline did not drain within 30s");
+                reload_error.add(1, &[]);
+                return Err(RuntimeError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "sibling pipeline did not drain within 30s during reload",
+                )));
+            }
+            Ok(Ok(Ok(()))) => {}
+        }
+    }
     Ok(())
 }
 

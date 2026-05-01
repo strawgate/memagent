@@ -210,4 +210,23 @@ SupervisorProgress ==
     [](supervisor_state # "idle" /\ ~shutdown =>
        <>(supervisor_state = "idle" \/ shutdown))
 
+(* ═══════════ COVERAGE SCENARIOS ═══════════ *)
+(* Negated invariants — TLC counterexamples show reachability of key scenarios. *)
+
+(* Crash during signaling: child dies while supervisor sends SIGHUP *)
+CoverCrashDuringSignaling ==
+    ~(supervisor_state = "signaling" /\ ~child_alive)
+
+(* Signal skip: a newer config arrived before signal was delivered *)
+CoverSignalSkip ==
+    ~(supervisor_state = "signaling" /\ latest_pushed > child_config + 1)
+
+(* Multiple configs processed *)
+CoverMultipleConfigs ==
+    ~(latest_pushed > 1)
+
+(* Child converged: child_config equals main and both > 0 *)
+CoverChildConverged ==
+    ~(child_config = main /\ main > 0)
+
 ================================================================================

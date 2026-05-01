@@ -137,7 +137,7 @@ struct DiagnosticsState {
     trace_buf: Option<crate::span_exporter::SpanBuffer>,
     telemetry: crate::telemetry_buffer::TelemetryBuffers,
     telemetry_tx: broadcast::Sender<String>,
-    reload_trigger: Option<tokio::sync::mpsc::Sender<()>>,
+    reload_trigger: Option<tokio::sync::mpsc::Sender<Option<String>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ pub struct DiagnosticsServer {
     /// OTLP JSON telemetry buffers for the dashboard.
     telemetry: crate::telemetry_buffer::TelemetryBuffers,
     /// Optional channel to trigger a config reload from the HTTP endpoint.
-    reload_trigger: Option<tokio::sync::mpsc::Sender<()>>,
+    reload_trigger: Option<tokio::sync::mpsc::Sender<Option<String>>>,
 }
 
 impl DiagnosticsServer {
@@ -230,7 +230,7 @@ impl DiagnosticsServer {
 
     /// Set the reload trigger channel so `POST /api/v1/reload` can request a
     /// config reload.
-    pub fn set_reload_trigger(&mut self, tx: tokio::sync::mpsc::Sender<()>) {
+    pub fn set_reload_trigger(&mut self, tx: tokio::sync::mpsc::Sender<Option<String>>) {
         self.reload_trigger = Some(tx);
     }
 
@@ -1027,12 +1027,12 @@ async fn serve_telemetry_logs(State(state): State<Arc<DiagnosticsState>>) -> imp
 async fn serve_reload(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
     match state.reload_trigger.as_ref() {
         None => (StatusCode::SERVICE_UNAVAILABLE, "reload not configured"),
-        Some(tx) => match tx.try_send(()) {
+        Some(tx) => match tx.try_send(None) {
             Ok(()) => (StatusCode::ACCEPTED, "reload triggered"),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(())) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 (StatusCode::TOO_MANY_REQUESTS, "reload already in progress")
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "reload channel closed")
             }
         },
@@ -2744,7 +2744,7 @@ output:
 
     #[test]
     fn reload_endpoint_returns_accepted_when_trigger_configured() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
         let mut server = DiagnosticsServer::new("127.0.0.1:0");
         server.set_reload_trigger(tx);
         let (handle, addr) = server.start().unwrap();
@@ -2757,11 +2757,11 @@ output:
         );
         assert_eq!(body, "reload triggered");
 
-        // Verify the channel received the signal.
-        assert!(
-            rx.try_recv().is_ok(),
-            "reload trigger channel should have received a message"
-        );
+        // Verify the channel received None (HTTP reload = re-read from disk).
+        match rx.try_recv() {
+            Ok(None) => {} // expected
+            other => panic!("expected Some(None), got {other:?}"),
+        }
 
         drop(handle);
     }
@@ -2784,7 +2784,7 @@ output:
 
     #[test]
     fn reload_endpoint_returns_429_when_channel_full() {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
         let mut server = DiagnosticsServer::new("127.0.0.1:0");
         server.set_reload_trigger(tx);
         let (handle, addr) = server.start().unwrap();

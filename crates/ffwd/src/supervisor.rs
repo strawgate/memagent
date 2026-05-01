@@ -36,14 +36,19 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     // Parse config to extract opamp section.
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {}: {e}", config_path.display())))?;
-    let config = ffwd_config::Config::load_str_with_base_path(&config_yaml, config_path.parent())
+    let validated = ffwd_config::ValidatedConfig::from_yaml(&config_yaml, config_path.parent())
         .map_err(|e| CliError::Config(e.to_string()))?;
 
-    let opamp_config = config.opamp.ok_or_else(|| {
+    let opamp_config = validated.config().opamp.clone().ok_or_else(|| {
         CliError::Config("supervised mode requires an `opamp:` section in config".to_string())
     })?;
 
-    let data_dir = config.storage.data_dir.as_deref().map(PathBuf::from);
+    let data_dir = validated
+        .config()
+        .storage
+        .data_dir
+        .as_deref()
+        .map(PathBuf::from);
 
     tracing::info!(
         config = %config_path.display(),
@@ -59,8 +64,9 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .map_err(|e| CliError::Runtime(std::io::Error::other(e)))?;
 
-    // Channel for OpAMP to notify us of new remote config.
-    let (reload_tx, mut reload_rx) = mpsc::channel::<()>(4);
+    // Channel for OpAMP to deliver config reload signals (capacity 1 — coalesces).
+    // Some(yaml) = OpAMP pushed config, None = restart command (re-read from disk).
+    let (reload_tx, mut reload_rx) = mpsc::channel::<Option<String>>(1);
 
     // Resolve agent identity.
     let identity = ffwd_opamp::AgentIdentity::resolve(
@@ -76,22 +82,24 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     let opamp_client = ffwd_opamp::OpampClient::new(opamp_config.clone(), identity, reload_tx);
     let state_handle = opamp_client.state_handle();
 
-    // Report initial effective config.
-    state_handle.set_effective_config(&config_yaml);
+    // Report initial effective config (use validated YAML for consistency).
+    state_handle.set_effective_config(validated.effective_yaml());
 
     // Spawn OpAMP client task.
-    // In supervisor mode, the OpAMP client writes to the intermediate remote
-    // config file (NOT the main config path). handle_remote_config then reads
-    // from that file, validates, and does the atomic write + SIGHUP dance.
+    // Config pushes are sent directly on the reload channel as Some(yaml).
+    // No shared state for config delivery — the channel carries both the
+    // signal and the payload atomically.
     let opamp_shutdown = shutdown.clone();
     let opamp_data_dir = data_dir.clone();
     let opamp_remote_config_path = remote_config_path.clone();
+    let opamp_config_base = config_path.parent().map(PathBuf::from);
     let opamp_handle = tokio::spawn(async move {
         if let Err(e) = opamp_client
             .run(
                 opamp_shutdown,
                 opamp_data_dir.as_deref(),
                 Some(opamp_remote_config_path.as_path()),
+                opamp_config_base.as_deref(),
             )
             .await
         {
@@ -130,7 +138,7 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                 }
                 result = reload_rx.recv() => {
                     match result {
-                        Some(()) => ChildExit::Reload,
+                        Some(signal) => ChildExit::Reload(signal),
                         None => {
                             // Channel closed (all senders dropped, e.g. OpAMP task exited).
                             // Wait for child or shutdown — no more reloads possible.
@@ -152,7 +160,20 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
 
             match exit_reason {
                 ChildExit::Signal(sig) => {
-                    forward_signal(child_pid, sig);
+                    // Guard: check if child is still alive before forwarding.
+                    // Prevents signaling a recycled PID if the child died between
+                    // the select! and here (astronomically unlikely but safe).
+                    match child.try_wait() {
+                        Ok(Some(_status)) => {
+                            // Child already exited — no need to signal.
+                            tracing::debug!(
+                                "supervisor: child already exited before signal forward"
+                            );
+                        }
+                        _ => {
+                            forward_signal(child_pid, sig);
+                        }
+                    }
                     shutdown.cancel();
                     wait_or_kill(&mut child, child_pid).await;
                     break 'outer;
@@ -199,8 +220,8 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                     shutdown.cancel();
                     break 'outer;
                 }
-                ChildExit::Reload => {
-                    // OpAMP pushed new config — validate, write, SIGHUP.
+                ChildExit::Reload(yaml) => {
+                    // Reload triggered — validate, write, SIGHUP.
                     // Guard: verify child is still alive before signaling.
                     match child.try_wait() {
                         Ok(Some(status)) => {
@@ -227,14 +248,19 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                             handle_remote_config(
                                 &config_path,
                                 &state_handle,
-                                &remote_config_path,
                                 &mut child,
                                 child_pid,
+                                yaml,
                             )
                             .await;
                         }
                         Err(e) => {
-                            tracing::error!(error = %e, "supervisor: failed to check child status");
+                            // Cannot determine child status — treat as crash and respawn.
+                            tracing::error!(
+                                error = %e,
+                                "supervisor: failed to check child status during reload, treating as crash"
+                            );
+                            break; // Respawn via outer loop.
                         }
                     }
                 }
@@ -242,8 +268,13 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
         }
     }
 
-    // Wait for OpAMP task to finish.
-    let _ = opamp_handle.await;
+    // Wait for OpAMP task to finish (bounded — don't hang on stuck network).
+    match tokio::time::timeout(Duration::from_secs(5), opamp_handle).await {
+        Ok(_) => {}
+        Err(_) => {
+            tracing::warn!("supervisor: opamp task did not exit within 5s, abandoning");
+        }
+    }
     tracing::info!("supervisor: exiting");
     Ok(())
 }
@@ -256,7 +287,8 @@ enum ChildExit {
     Exited(std::process::ExitStatus),
     Signal(i32),
     WaitError(std::io::Error),
-    Reload,
+    /// Reload requested. `Some(yaml)` = OpAMP-pushed config, `None` = re-read from disk.
+    Reload(Option<String>),
 }
 
 fn spawn_child(config_path: &str) -> Result<tokio::process::Child, CliError> {
@@ -322,62 +354,106 @@ fn was_terminated_by(status: std::process::ExitStatus, signal: i32) -> bool {
 // Config reload helpers
 // ---------------------------------------------------------------------------
 
-/// Handle a remote config push from OpAMP.
+/// Handle a remote config push from OpAMP using the config-flow state machine.
 ///
-/// Reads the remote config file written by the OpAMP client, validates it,
-/// atomically writes it to the main config path, and sends SIGHUP to the child.
+/// Drives a [`ConfigFlow`](crate::config_flow::ConfigFlow) through its states,
+/// executing effects at each step. Each step is deterministic and individually
+/// testable.
+///
+/// `yaml` is `Some(config_yaml)` when the OpAMP server pushed a config directly,
+/// or `None` for a restart command (re-read config from disk — not yet supported
+/// in supervisor mode, logged as a no-op).
 async fn handle_remote_config(
     config_path: &Path,
     state_handle: &ffwd_opamp::OpampStateHandle,
-    remote_path: &Path,
     child: &mut tokio::process::Child,
     child_pid: u32,
+    yaml: Option<String>,
 ) {
-    let new_yaml = match std::fs::read_to_string(remote_path) {
-        Ok(yaml) => yaml,
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                path = %remote_path.display(),
-                "supervisor: failed to read remote config"
-            );
-            return;
-        }
+    use crate::config_flow::{ConfigFlow, Effect, Event};
+
+    // None means "re-read from disk" — in supervisor mode we only apply explicit
+    // config pushes since we own the authoritative config file.
+    let Some(remote_yaml) = yaml else {
+        tracing::debug!(
+            "supervisor: reload signal without config payload (restart command), ignoring"
+        );
+        return;
     };
 
-    // Validate the config before writing.
-    if let Err(e) = ffwd_config::Config::load_str_with_base_path(&new_yaml, config_path.parent()) {
-        tracing::error!(
-            error = %e,
-            "supervisor: remote config failed validation, skipping reload"
-        );
-        return;
-    }
+    let mut flow = ConfigFlow::new(config_path.to_owned(), child_pid);
 
-    // Atomic write: write to temp file next to target, then rename.
-    if let Err(e) = atomic_write_config(config_path, &new_yaml) {
-        tracing::error!(
-            error = %e,
-            path = %config_path.display(),
-            "supervisor: failed to write config"
-        );
-        return;
-    }
+    // Kick off the cycle. We pass a dummy path since we already have the yaml.
+    let mut effect = flow.step(Event::ConfigAvailable {
+        remote_path: PathBuf::from("<in-memory>"),
+    });
 
-    tracing::info!(
-        path = %config_path.display(),
-        "supervisor: wrote updated config, sending SIGHUP to child"
-    );
-
-    // Send SIGHUP to trigger child reload.
-    if !forward_signal(child_pid, libc::SIGHUP) {
-        return;
-    }
-
-    if child_survives_reload_window(child).await {
-        state_handle.set_effective_config(&new_yaml);
-    } else {
-        tracing::error!("supervisor: child exited during reload; effective config not updated");
+    loop {
+        match effect {
+            Effect::ReadAndValidate(_path) => {
+                // Validate the YAML we received directly on the channel.
+                let event = match ffwd_config::ValidatedConfig::from_yaml(
+                    &remote_yaml,
+                    config_path.parent(),
+                ) {
+                    Ok(v) => Event::ReadOk(Box::new(v)),
+                    Err(e) => Event::ReadFailed(format!("validation failed: {e}")),
+                };
+                effect = flow.step(event);
+            }
+            Effect::WriteConfig { config_path, yaml } => {
+                // Perform atomic write in a blocking task to avoid stalling the
+                // tokio runtime on slow/network filesystems.
+                let write_result = tokio::task::spawn_blocking(move || {
+                    atomic_write_config(&config_path, &yaml).map(|()| config_path)
+                })
+                .await;
+                let event = match write_result {
+                    Ok(Ok(written_path)) => {
+                        tracing::info!(
+                            path = %written_path.display(),
+                            "supervisor: wrote updated config, sending SIGHUP to child"
+                        );
+                        Event::WriteOk
+                    }
+                    Ok(Err(e)) => Event::WriteFailed(format!("failed to write config: {e}")),
+                    Err(e) => Event::WriteFailed(format!("write task panicked: {e}")),
+                };
+                effect = flow.step(event);
+            }
+            Effect::SendSignal { child_pid: pid } => {
+                let event = if forward_signal(pid, libc::SIGHUP) {
+                    if child_survives_reload_window(child).await {
+                        Event::SignalDelivered
+                    } else {
+                        Event::SignalFailed(
+                            "child exited during reload stability window".to_owned(),
+                        )
+                    }
+                } else {
+                    Event::SignalFailed("failed to send SIGHUP".to_owned())
+                };
+                effect = flow.step(event);
+            }
+            Effect::ReportEffective { yaml } => {
+                state_handle.set_effective_config(&yaml);
+                break;
+            }
+            Effect::LogError(msg) => {
+                tracing::error!("supervisor: {msg}");
+                break;
+            }
+            Effect::None => {
+                // The state machine returned no effect — either the cycle is complete
+                // or an unexpected event was delivered (defensive no-op in step()).
+                debug_assert!(
+                    flow.is_idle(),
+                    "Effect::None with non-idle state {:?} — possible invalid transition",
+                    flow.state()
+                );
+                break;
+            }
+        }
     }
 }
 
@@ -559,30 +635,29 @@ mod proptests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Path contract properties — prevent the path mismatch bug
+    // Path contract properties — remote_config_path helpers are consistent
     // ═══════════════════════════════════════════════════════════════
 
-    // OpAMP remote_config_path and handle_remote_config MUST read from the
-    // same location. This property verifies the contract: both use
-    // `OpampClient::remote_config_path(data_dir)`.
+    // The remote_config_path helper functions return consistent results.
+    // While the OpAMP callback no longer writes to disk (it uses in-memory
+    // shared state), these path helpers are still used for crash-recovery
+    // persistence and must remain deterministic.
     proptest! {
         #[test]
-        fn path_contract_opamp_writes_where_supervisor_reads(
+        fn path_contract_remote_config_path_is_deterministic(
             suffix in "[a-z]{1,10}",
         ) {
             let dir = tempfile::tempdir().expect("create temp dir");
             let data_dir = dir.path().join(&suffix);
             std::fs::create_dir_all(&data_dir).expect("create data dir");
 
-            // The path OpAMP client writes to (when config_path=None, i.e. supervisor mode).
-            let opamp_write_path = ffwd_opamp::OpampClient::remote_config_path(Some(&data_dir));
-
-            // The path handle_remote_config reads from (line 322 in supervisor.rs).
-            let supervisor_read_path = ffwd_opamp::OpampClient::remote_config_path(Some(&data_dir));
+            // Both calls with same data_dir should return the same path.
+            let path_a = ffwd_opamp::OpampClient::remote_config_path(Some(&data_dir));
+            let path_b = ffwd_opamp::OpampClient::remote_config_path(Some(&data_dir));
 
             prop_assert_eq!(
-                opamp_write_path, supervisor_read_path,
-                "OpAMP write path must equal supervisor read path"
+                path_a, path_b,
+                "remote_config_path must be deterministic"
             );
         }
     }
@@ -637,46 +712,10 @@ mod proptests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // State machine properties — model supervisor transitions
+    // State machine properties — uses production config_flow module
     // ═══════════════════════════════════════════════════════════════
 
-    /// Model the supervisor state machine: idle → detect_config → validate →
-    /// write → signal → idle. Every valid transition sequence ends in idle.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    enum SupervisorState {
-        Idle,
-        ReadingConfig,
-        Validating,
-        Writing,
-        Signaling,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    enum Event {
-        ConfigAvailable,
-        ReadSuccess,
-        ValidationOk,
-        ValidationFail,
-        WriteSuccess,
-        WriteFail,
-        ChildAlive,
-        ChildDead,
-    }
-
-    fn transition(state: SupervisorState, event: Event) -> SupervisorState {
-        match (state, event) {
-            (SupervisorState::Idle, Event::ConfigAvailable) => SupervisorState::ReadingConfig,
-            (SupervisorState::ReadingConfig, Event::ReadSuccess) => SupervisorState::Validating,
-            (SupervisorState::ReadingConfig, _) => SupervisorState::Idle, // Read failed
-            (SupervisorState::Validating, Event::ValidationOk) => SupervisorState::Writing,
-            (SupervisorState::Validating, Event::ValidationFail) => SupervisorState::Idle,
-            (SupervisorState::Writing, Event::WriteSuccess) => SupervisorState::Signaling,
-            (SupervisorState::Writing, Event::WriteFail) => SupervisorState::Idle,
-            (SupervisorState::Signaling, Event::ChildAlive) => SupervisorState::Idle,
-            (SupervisorState::Signaling, Event::ChildDead) => SupervisorState::Idle,
-            _ => state, // Invalid transition — stay in place.
-        }
-    }
+    use crate::config_flow::{self, SimpleEvent, State as CfState};
 
     proptest! {
         /// Any sequence of events always leaves the supervisor in a valid state.
@@ -684,30 +723,26 @@ mod proptests {
         fn supervisor_state_machine_always_valid(
             events in proptest::collection::vec(
                 prop_oneof![
-                    Just(Event::ConfigAvailable),
-                    Just(Event::ReadSuccess),
-                    Just(Event::ValidationOk),
-                    Just(Event::ValidationFail),
-                    Just(Event::WriteSuccess),
-                    Just(Event::WriteFail),
-                    Just(Event::ChildAlive),
-                    Just(Event::ChildDead),
+                    Just(SimpleEvent::ConfigAvailable),
+                    Just(SimpleEvent::ReadOk),
+                    Just(SimpleEvent::ReadFailed),
+                    Just(SimpleEvent::WriteOk),
+                    Just(SimpleEvent::WriteFailed),
+                    Just(SimpleEvent::SignalDelivered),
+                    Just(SimpleEvent::SignalFailed),
                 ],
                 1..50
             )
         ) {
-            let mut state = SupervisorState::Idle;
+            let mut state = CfState::Idle;
             for event in &events {
-                state = transition(state, *event);
-                // State is always one of the valid states (type system enforces this,
-                // but we also verify the machine doesn't get stuck in signaling forever).
+                state = config_flow::transition(state, event);
                 prop_assert!(matches!(
                     state,
-                    SupervisorState::Idle
-                        | SupervisorState::ReadingConfig
-                        | SupervisorState::Validating
-                        | SupervisorState::Writing
-                        | SupervisorState::Signaling
+                    CfState::Idle
+                        | CfState::Reading
+                        | CfState::Writing
+                        | CfState::Signaling
                 ));
             }
         }
@@ -715,51 +750,46 @@ mod proptests {
         /// A valid "happy path" sequence always ends in Idle.
         #[test]
         fn happy_path_returns_to_idle(iterations in 1u32..20) {
-            let mut state = SupervisorState::Idle;
+            let mut state = CfState::Idle;
             for _ in 0..iterations {
-                state = transition(state, Event::ConfigAvailable);
-                prop_assert_eq!(state, SupervisorState::ReadingConfig);
-                state = transition(state, Event::ReadSuccess);
-                prop_assert_eq!(state, SupervisorState::Validating);
-                state = transition(state, Event::ValidationOk);
-                prop_assert_eq!(state, SupervisorState::Writing);
-                state = transition(state, Event::WriteSuccess);
-                prop_assert_eq!(state, SupervisorState::Signaling);
-                state = transition(state, Event::ChildAlive);
-                prop_assert_eq!(state, SupervisorState::Idle);
+                state = config_flow::transition(state, &SimpleEvent::ConfigAvailable);
+                prop_assert_eq!(state, CfState::Reading);
+                state = config_flow::transition(state, &SimpleEvent::ReadOk);
+                prop_assert_eq!(state, CfState::Writing);
+                state = config_flow::transition(state, &SimpleEvent::WriteOk);
+                prop_assert_eq!(state, CfState::Signaling);
+                state = config_flow::transition(state, &SimpleEvent::SignalDelivered);
+                prop_assert_eq!(state, CfState::Idle);
             }
         }
 
-        /// Validation failure always returns to idle without signaling.
+        /// Read failure always returns to idle without writing.
         #[test]
-        fn invalid_config_never_signals(iterations in 1u32..20) {
-            let mut state = SupervisorState::Idle;
-            let mut ever_signaled = false;
+        fn invalid_config_never_writes(iterations in 1u32..20) {
+            let mut state = CfState::Idle;
+            let mut ever_writing = false;
             for _ in 0..iterations {
-                state = transition(state, Event::ConfigAvailable);
-                state = transition(state, Event::ReadSuccess);
-                state = transition(state, Event::ValidationFail);
-                if state == SupervisorState::Signaling {
-                    ever_signaled = true;
+                state = config_flow::transition(state, &SimpleEvent::ConfigAvailable);
+                state = config_flow::transition(state, &SimpleEvent::ReadFailed);
+                if state == CfState::Writing || state == CfState::Signaling {
+                    ever_writing = true;
                 }
-                prop_assert_eq!(state, SupervisorState::Idle);
+                prop_assert_eq!(state, CfState::Idle);
             }
-            prop_assert!(!ever_signaled, "validation failure must never reach signaling");
+            prop_assert!(!ever_writing, "read failure must never reach writing or signaling");
         }
 
-        /// Dead child check always returns to idle (PID race guard).
+        /// Signal failure always returns to idle (PID race guard).
         #[test]
         fn dead_child_never_gets_signaled(iterations in 1u32..10) {
             for _ in 0..iterations {
-                let mut state = SupervisorState::Idle;
-                state = transition(state, Event::ConfigAvailable);
-                state = transition(state, Event::ReadSuccess);
-                state = transition(state, Event::ValidationOk);
-                state = transition(state, Event::WriteSuccess);
-                // Child died before we could signal.
-                state = transition(state, Event::ChildDead);
-                prop_assert_eq!(state, SupervisorState::Idle,
-                    "dead child must return supervisor to idle");
+                let mut state = CfState::Idle;
+                state = config_flow::transition(state, &SimpleEvent::ConfigAvailable);
+                state = config_flow::transition(state, &SimpleEvent::ReadOk);
+                state = config_flow::transition(state, &SimpleEvent::WriteOk);
+                state = config_flow::transition(state, &SimpleEvent::SignalFailed);
+                prop_assert_eq!(state, CfState::Idle,
+                    "signal failure must return supervisor to idle");
             }
         }
     }

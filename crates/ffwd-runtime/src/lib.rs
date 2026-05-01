@@ -8,6 +8,7 @@ pub mod bootstrap;
 pub mod generated_cli;
 pub mod pipeline;
 pub mod processor;
+pub(crate) mod reload;
 pub mod transform;
 #[cfg(feature = "turmoil")]
 pub mod turmoil_barriers;
