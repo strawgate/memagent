@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
@@ -31,7 +31,7 @@ jobs:
         run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
 
       - name: Download previous corpus
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fuzz-corpus-ffwd-core
           path: crates/ffwd-core/fuzz/corpus/
@@ -62,7 +62,7 @@ jobs:
           done
 
       - name: Upload corpus
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-corpus-ffwd-core
           path: crates/ffwd-core/fuzz/corpus/
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload artifacts on crash
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-ffwd-core
           path: crates/ffwd-core/fuzz/artifacts/
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
@@ -93,7 +93,7 @@ jobs:
         run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
 
       - name: Download previous corpus
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fuzz-corpus-ffwd-io
           path: crates/ffwd-io/fuzz/corpus/
@@ -122,7 +122,7 @@ jobs:
           done
 
       - name: Upload corpus
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-corpus-ffwd-io
           path: crates/ffwd-io/fuzz/corpus/
@@ -130,7 +130,7 @@ jobs:
 
       - name: Upload artifacts on crash
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-ffwd-io
           path: crates/ffwd-io/fuzz/artifacts/
